@@ -1,0 +1,76 @@
+--- orig/AskAITask.smali
++++ patched/AskAITask.smali
+@@ -161,16 +161,39 @@
+     move-result p1
+ 
+     iput-boolean p1, p0, Lcom/rayneo/airuntime/controller/AskAITask;->isInit:Z
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-04A | Register AskAITask and allow offline init when CustomAI enabled] ====================
++    invoke-static/range {p0 .. p0}, Lcom/rayneo/customai/CustomAiHooks;->onAskAiInit(Lcom/rayneo/airuntime/controller/AskAITask;)Z
++
++    move-result v0
++
++    if-eqz v0, :cond_custom_ai_ask_init_orig
++
++    iget-boolean v0, p0, Lcom/rayneo/airuntime/controller/AskAITask;->isInit:Z
++
++    if-nez v0, :cond_custom_ai_ask_init_orig
++
++    const/4 v0, 0x1
++
++    iput-boolean v0, p0, Lcom/rayneo/airuntime/controller/AskAITask;->isInit:Z
++
++    :cond_custom_ai_ask_init_orig
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-04A] ====================
++
+     iget-boolean p0, p0, Lcom/rayneo/airuntime/controller/AskAITask;->isInit:Z
+ 
+     return p0
+ .end method
+ 
+ .method public final releaseTask()Z
+     .registers 2
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-04D | Release AskAITask CustomAI state] ====================
++    invoke-static/range {p0 .. p0}, Lcom/rayneo/customai/CustomAiHooks;->onAskAiRelease(Lcom/rayneo/airuntime/controller/AskAITask;)V
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-04D] ====================
++
++
+     iget-boolean v0, p0, Lcom/rayneo/airuntime/controller/AskAITask;->isInit:Z
+ 
+     if-eqz v0, :cond_d
+ 
+@@ -314,8 +337,20 @@
+ 
+     return v1
+ 
+     :cond_32
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-04B | Intercept phone AskAI prompt and stream custom LLM response] ====================
++    invoke-static/range {p0 .. p1}, Lcom/rayneo/customai/CustomAiHooks;->onAskAiStart(Lcom/rayneo/airuntime/controller/AskAITask;Lcom/rayneo/airuntime/controller/RayNeoAskAIParams;)Z
++
++    move-result v0
++
++    if-eqz v0, :cond_custom_ai_ask_start_pass
++
++    return v0
++
++    :cond_custom_ai_ask_start_pass
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-04B] ====================
++
+     iget-object v0, p0, Lcom/rayneo/airuntime/controller/AskAITask;->name:Ljava/lang/String;
+ 
+     invoke-direct {p0, v0, p1}, Lcom/rayneo/airuntime/controller/AskAITask;->nativeStartTask(Ljava/lang/String;Lcom/rayneo/airuntime/controller/RayNeoAskAIParams;)Z
+ 
+@@ -376,8 +411,12 @@
+ 
+     return v1
+ 
+     :cond_2d
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-04C | Cancel active CustomAI AskAI stream] ====================
++    invoke-static/range {p0 .. p0}, Lcom/rayneo/customai/CustomAiHooks;->onAskAiStop(Lcom/rayneo/airuntime/controller/AskAITask;)V
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-04C] ====================
++
+     iget-object v0, p0, Lcom/rayneo/airuntime/controller/AskAITask;->name:Ljava/lang/String;
+ 
+     invoke-direct {p0, v0}, Lcom/rayneo/airuntime/controller/AskAITask;->nativeStopTask(Ljava/lang/String;)Z
+ 

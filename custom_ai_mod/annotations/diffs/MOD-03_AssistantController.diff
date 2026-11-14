@@ -1,0 +1,346 @@
+--- orig/AssistantController.smali
++++ patched/AssistantController.smali
+@@ -366,8 +366,13 @@
+ 
+ .method private final nativeOnAsrResult(Ljava/lang/String;Ljava/lang/String;ZLjava/lang/String;)V
+     .registers 17
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-03E | Trigger Custom LLM when stock ASR finishes (stock ASR stays untouched)] ====================
++    invoke-static/range {p0 .. p4}, Lcom/rayneo/customai/CustomAiHooks;->onNativeAsrResult(Lcom/rayneo/airuntime/controller/AssistantController;Ljava/lang/String;Ljava/lang/String;ZLjava/lang/String;)V
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-03E] ====================
++
++
+     invoke-static {}, Lcom/rayneo/airuntime/AiRuntimeNativeKt;->getLoggerBridge()Lcom/rayneo/airuntime/bridge/RayNeoLoggerBridge;
+ 
+     move-result-object v0
+ 
+@@ -456,8 +461,21 @@
+ 
+ .method private final nativeOnAudioRecordEnd(Ljava/lang/String;)V
+     .registers 13
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-03O | Filter native lifecycle callback via shouldSuppressNativeAudioRecordEnd] ====================
++    invoke-static/range {p0 .. p1}, Lcom/rayneo/customai/CustomAiHooks;->shouldSuppressNativeAudioRecordEnd(Lcom/rayneo/airuntime/controller/AssistantController;Ljava/lang/String;)Z
++
++    move-result v0
++
++    if-eqz v0, :cond_custom_ai_rec_end_pass
++
++    return-void
++
++    :cond_custom_ai_rec_end_pass
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-03O] ====================
++
++
+     invoke-static {}, Lcom/rayneo/airuntime/AiRuntimeNativeKt;->getLoggerBridge()Lcom/rayneo/airuntime/bridge/RayNeoLoggerBridge;
+ 
+     move-result-object v0
+ 
+@@ -534,8 +552,21 @@
+ 
+ .method private final nativeOnAudioRecordStart(Ljava/lang/String;)V
+     .registers 13
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-03N | Suppress native post-ASR/lifecycle callback via shouldSuppressNativePostAsr] ====================
++    invoke-static/range {p0 .. p1}, Lcom/rayneo/customai/CustomAiHooks;->shouldSuppressNativePostAsr(Lcom/rayneo/airuntime/controller/AssistantController;Ljava/lang/String;)Z
++
++    move-result v0
++
++    if-eqz v0, :cond_custom_ai_rec_start_pass
++
++    return-void
++
++    :cond_custom_ai_rec_start_pass
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-03N] ====================
++
++
+     invoke-static {}, Lcom/rayneo/airuntime/AiRuntimeNativeKt;->getLoggerBridge()Lcom/rayneo/airuntime/bridge/RayNeoLoggerBridge;
+ 
+     move-result-object v0
+ 
+@@ -612,8 +643,21 @@
+ 
+ .method private final nativeOnDeepThinkStatus(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V
+     .registers 15
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-03G | Suppress native post-ASR/lifecycle callback via shouldSuppressNativePostAsr] ====================
++    invoke-static/range {p0 .. p1}, Lcom/rayneo/customai/CustomAiHooks;->shouldSuppressNativePostAsr(Lcom/rayneo/airuntime/controller/AssistantController;Ljava/lang/String;)Z
++
++    move-result v0
++
++    if-eqz v0, :cond_custom_ai_dt_pass
++
++    return-void
++
++    :cond_custom_ai_dt_pass
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-03G] ====================
++
++
+     invoke-static {}, Lcom/rayneo/airuntime/AiRuntimeNativeKt;->getLoggerBridge()Lcom/rayneo/airuntime/bridge/RayNeoLoggerBridge;
+ 
+     move-result-object v0
+ 
+@@ -700,8 +744,21 @@
+ 
+ .method private final nativeOnError(Ljava/lang/String;ILjava/lang/String;)V
+     .registers 15
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-03K | Suppress native post-ASR/lifecycle callback via shouldSuppressNativePostAsr] ====================
++    invoke-static/range {p0 .. p1}, Lcom/rayneo/customai/CustomAiHooks;->shouldSuppressNativePostAsr(Lcom/rayneo/airuntime/controller/AssistantController;Ljava/lang/String;)Z
++
++    move-result v0
++
++    if-eqz v0, :cond_custom_ai_err_pass
++
++    return-void
++
++    :cond_custom_ai_err_pass
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-03K] ====================
++
++
+     invoke-static {}, Lcom/rayneo/airuntime/AiRuntimeNativeKt;->getLoggerBridge()Lcom/rayneo/airuntime/bridge/RayNeoLoggerBridge;
+ 
+     move-result-object v0
+ 
+@@ -788,8 +845,21 @@
+ 
+ .method private final nativeOnNlpResult(Ljava/lang/String;Lcom/rayneo/airuntime/controller/NlpResult;)V
+     .registers 14
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-03F | Intercept cloud NLP while allowing local offline hardware commands] ====================
++    invoke-static/range {p0 .. p2}, Lcom/rayneo/customai/CustomAiHooks;->shouldInterceptNativeNlpResult(Lcom/rayneo/airuntime/controller/AssistantController;Ljava/lang/String;Lcom/rayneo/airuntime/controller/NlpResult;)Z
++
++    move-result v0
++
++    if-eqz v0, :cond_custom_ai_nlp_pass
++
++    return-void
++
++    :cond_custom_ai_nlp_pass
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-03F] ====================
++
++
+     invoke-static {}, Lcom/rayneo/airuntime/AiRuntimeNativeKt;->getLoggerBridge()Lcom/rayneo/airuntime/bridge/RayNeoLoggerBridge;
+ 
+     move-result-object v0
+ 
+@@ -866,8 +936,21 @@
+ 
+ .method private final nativeOnNotify(Ljava/lang/String;IILjava/lang/String;)V
+     .registers 17
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-03P | Suppress native post-ASR/lifecycle callback via shouldSuppressNativePostAsr] ====================
++    invoke-static/range {p0 .. p1}, Lcom/rayneo/customai/CustomAiHooks;->shouldSuppressNativePostAsr(Lcom/rayneo/airuntime/controller/AssistantController;Ljava/lang/String;)Z
++
++    move-result v0
++
++    if-eqz v0, :cond_custom_ai_notify_pass
++
++    return-void
++
++    :cond_custom_ai_notify_pass
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-03P] ====================
++
++
+     invoke-static {}, Lcom/rayneo/airuntime/AiRuntimeNativeKt;->getLoggerBridge()Lcom/rayneo/airuntime/bridge/RayNeoLoggerBridge;
+ 
+     move-result-object v0
+ 
+@@ -956,8 +1039,21 @@
+ 
+ .method private final nativeOnRayClawToolCallInfo(Ljava/lang/String;Lcom/rayneo/airuntime/controller/RayClawToolCallInfo;)V
+     .registers 14
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-03H | Detect RayClaw tool calls (weather/search/todo/music/skills) and route to official pipeline] ====================
++    invoke-static/range {p0 .. p2}, Lcom/rayneo/customai/CustomAiHooks;->onNativeRayClawToolCall(Lcom/rayneo/airuntime/controller/AssistantController;Ljava/lang/String;Lcom/rayneo/airuntime/controller/RayClawToolCallInfo;)Z
++
++    move-result v0
++
++    if-eqz v0, :cond_custom_ai_rc_pass
++
++    return-void
++
++    :cond_custom_ai_rc_pass
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-03H] ====================
++
++
+     invoke-static {}, Lcom/rayneo/airuntime/AiRuntimeNativeKt;->getLoggerBridge()Lcom/rayneo/airuntime/bridge/RayNeoLoggerBridge;
+ 
+     move-result-object v0
+ 
+@@ -1034,8 +1130,21 @@
+ 
+ .method private final nativeOnResponseComplete(Ljava/lang/String;)V
+     .registers 13
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-03J | Suppress native post-ASR/lifecycle callback via shouldSuppressNativePostAsr] ====================
++    invoke-static/range {p0 .. p1}, Lcom/rayneo/customai/CustomAiHooks;->shouldSuppressNativePostAsr(Lcom/rayneo/airuntime/controller/AssistantController;Ljava/lang/String;)Z
++
++    move-result v0
++
++    if-eqz v0, :cond_custom_ai_rcmp_pass
++
++    return-void
++
++    :cond_custom_ai_rcmp_pass
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-03J] ====================
++
++
+     invoke-static {}, Lcom/rayneo/airuntime/AiRuntimeNativeKt;->getLoggerBridge()Lcom/rayneo/airuntime/bridge/RayNeoLoggerBridge;
+ 
+     move-result-object v0
+ 
+@@ -1112,8 +1221,21 @@
+ 
+ .method private final nativeOnSpeechStatus(Ljava/lang/String;I)V
+     .registers 14
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-03L | Filter native lifecycle callback via shouldSuppressNativeIntStatus] ====================
++    invoke-static/range {p0 .. p2}, Lcom/rayneo/customai/CustomAiHooks;->shouldSuppressNativeIntStatus(Lcom/rayneo/airuntime/controller/AssistantController;Ljava/lang/String;I)Z
++
++    move-result v0
++
++    if-eqz v0, :cond_custom_ai_speech_pass
++
++    return-void
++
++    :cond_custom_ai_speech_pass
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-03L] ====================
++
++
+     invoke-static {}, Lcom/rayneo/airuntime/AiRuntimeNativeKt;->getLoggerBridge()Lcom/rayneo/airuntime/bridge/RayNeoLoggerBridge;
+ 
+     move-result-object v0
+ 
+@@ -1190,8 +1312,21 @@
+ 
+ .method private final nativeOnTtsStatusChange(Ljava/lang/String;ILjava/lang/String;)V
+     .registers 15
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-03I | Suppress native post-ASR/lifecycle callback via shouldSuppressNativePostAsr] ====================
++    invoke-static/range {p0 .. p1}, Lcom/rayneo/customai/CustomAiHooks;->shouldSuppressNativePostAsr(Lcom/rayneo/airuntime/controller/AssistantController;Ljava/lang/String;)Z
++
++    move-result v0
++
++    if-eqz v0, :cond_custom_ai_tts_pass
++
++    return-void
++
++    :cond_custom_ai_tts_pass
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-03I] ====================
++
++
+     invoke-static {}, Lcom/rayneo/airuntime/AiRuntimeNativeKt;->getLoggerBridge()Lcom/rayneo/airuntime/bridge/RayNeoLoggerBridge;
+ 
+     move-result-object v0
+ 
+@@ -1277,8 +1412,21 @@
+ .end method
+ 
+ .method private final nativeOnVadStatusChange(Ljava/lang/String;I)V
+     .registers 14
++
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-03M | Filter native lifecycle callback via shouldSuppressNativeIntStatus] ====================
++    invoke-static/range {p0 .. p2}, Lcom/rayneo/customai/CustomAiHooks;->shouldSuppressNativeIntStatus(Lcom/rayneo/airuntime/controller/AssistantController;Ljava/lang/String;I)Z
++
++    move-result v0
++
++    if-eqz v0, :cond_custom_ai_vad_pass
++
++    return-void
++
++    :cond_custom_ai_vad_pass
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-03M] ====================
++
+ 
+     invoke-static {}, Lcom/rayneo/airuntime/AiRuntimeNativeKt;->getLoggerBridge()Lcom/rayneo/airuntime/bridge/RayNeoLoggerBridge;
+ 
+     move-result-object v0
+@@ -1403,8 +1551,13 @@
+     const-string v0, "config"
+ 
+     invoke-static {p1, v0}, Lkotlin/jvm/internal/r;->f(Ljava/lang/Object;Ljava/lang/String;)V
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-03D | Cleanup CustomAI session on destroy] ====================
++    invoke-static/range {p0 .. p1}, Lcom/rayneo/customai/CustomAiHooks;->onAssistantDestroyWorkflow(Lcom/rayneo/airuntime/controller/AssistantController;Lcom/rayneo/airuntime/controller/RayNeoAiConfig;)V
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-03D] ====================
++
++
+     iget-object v0, p0, Lcom/rayneo/airuntime/controller/AssistantController;->listenerMap:Ljava/util/Map;
+ 
+     invoke-virtual {p1}, Lcom/rayneo/airuntime/controller/RayNeoAiConfig;->getUuid()Ljava/lang/String;
+ 
+@@ -1527,8 +1680,13 @@
+     move-result-object v1
+ 
+     invoke-interface {v0, v1, p2}, Ljava/util/Map;->put(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-03A | Register Assistant session] ====================
++    invoke-static/range {p0 .. p2}, Lcom/rayneo/customai/CustomAiHooks;->onAssistantInitWorkflow(Lcom/rayneo/airuntime/controller/AssistantController;Lcom/rayneo/airuntime/controller/RayNeoAiConfig;Lcom/rayneo/airuntime/controller/AiResultListener;)V
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-03A] ====================
++
++
+     invoke-direct {p0, p1}, Lcom/rayneo/airuntime/controller/AssistantController;->nativeInitWorkflow(Lcom/rayneo/airuntime/controller/RayNeoAiConfig;)Z
+ 
+     move-result p0
+ 
+@@ -1597,9 +1755,22 @@
+     return-void
+ .end method
+ 
+ .method public final startNextRound()V
+-    .registers 1
++    .registers 2
++
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-03Q | Restart workflow cleanly when native C++ workflow was stopped during CustomAI turn] ====================
++    invoke-static/range {p0 .. p0}, Lcom/rayneo/customai/CustomAiHooks;->onAssistantStartNextRound(Lcom/rayneo/airuntime/controller/AssistantController;)Z
++
++    move-result v0
++
++    if-eqz v0, :cond_custom_ai_next_round_orig
++
++    return-void
++
++    :cond_custom_ai_next_round_orig
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-03Q] ====================
++
+ 
+     invoke-direct {p0}, Lcom/rayneo/airuntime/controller/AssistantController;->nativeStartNextRound()V
+ 
+     return-void
+@@ -1611,8 +1782,21 @@
+     const-string v0, "config"
+ 
+     invoke-static {p1, v0}, Lkotlin/jvm/internal/r;->f(Ljava/lang/Object;Ljava/lang/String;)V
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-03B | Reset turn & handle direct text-query workflow if any] ====================
++    invoke-static/range {p0 .. p2}, Lcom/rayneo/customai/CustomAiHooks;->onAssistantStartWorkflow(Lcom/rayneo/airuntime/controller/AssistantController;Lcom/rayneo/airuntime/controller/RayNeoAiConfig;Lcom/rayneo/airuntime/controller/RayNeoWorkflowParams;)Z
++
++    move-result v0
++
++    if-eqz v0, :cond_custom_ai_start_pass
++
++    return v0
++
++    :cond_custom_ai_start_pass
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-03B] ====================
++
++
+     invoke-direct {p0, p1, p2}, Lcom/rayneo/airuntime/controller/AssistantController;->nativeStartWorkflow(Lcom/rayneo/airuntime/controller/RayNeoAiConfig;Lcom/rayneo/airuntime/controller/RayNeoWorkflowParams;)Z
+ 
+     move-result p0
+ 
+@@ -1625,8 +1809,13 @@
+     const-string v0, "config"
+ 
+     invoke-static {p1, v0}, Lkotlin/jvm/internal/r;->f(Ljava/lang/Object;Ljava/lang/String;)V
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-03C | Cancel active CustomAI stream and stock TTS] ====================
++    invoke-static/range {p0 .. p1}, Lcom/rayneo/customai/CustomAiHooks;->onAssistantStopWorkflow(Lcom/rayneo/airuntime/controller/AssistantController;Lcom/rayneo/airuntime/controller/RayNeoAiConfig;)V
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-03C] ====================
++
++
+     invoke-direct {p0, p1}, Lcom/rayneo/airuntime/controller/AssistantController;->nativeStopWorkflow(Lcom/rayneo/airuntime/controller/RayNeoAiConfig;)Z
+ 
+     move-result p0
+ 

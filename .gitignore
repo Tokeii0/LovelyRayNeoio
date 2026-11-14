@@ -1,0 +1,31 @@
+# Official & patched APK binaries (never commit proprietary/large binaries)
+*.apk
+*.apks
+*.aab
+*.idsig
+*.dex
+
+# Private local APK signing keystores (auto-generated locally on first build)
+custom_ai_mod/keys/*.jks
+custom_ai_mod/keys/*.keystore
+custom_ai_mod/keys/*.pk8
+custom_ai_mod/keys/*.pem
+custom_ai_mod/keys/*.x509.pem
+
+# Full decompiled Smali snapshots (keep unified diffs in annotations/diffs/ only)
+custom_ai_mod/annotations/orig/
+custom_ai_mod/annotations/patched/
+
+# Temporary build & test outputs
+custom_ai_mod/_work_tmp_build/
+custom_ai_mod/test_out/
+__pycache__/
+*.py[cod]
+*.class
+*.log
+
+# OS / IDE metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

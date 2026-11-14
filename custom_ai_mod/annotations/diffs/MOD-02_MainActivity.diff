@@ -1,0 +1,38 @@
+--- orig/MainActivity.smali
++++ patched/MainActivity.smali
+@@ -138,8 +138,21 @@
+     const-string v0, "event"
+ 
+     invoke-static {p1, v0}, Lkotlin/jvm/internal/r;->f(Ljava/lang/Object;Ljava/lang/String;)V
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-02A | 3x Volume-Up opens CustomAI Settings] ====================
++    invoke-static/range {p0 .. p1}, Lcom/rayneo/customai/CustomAiHooks;->onMainActivityKeyEvent(Landroid/app/Activity;Landroid/view/KeyEvent;)Z
++
++    move-result v0
++
++    if-eqz v0, :cond_custom_ai_key_pass
++
++    return v0
++
++    :cond_custom_ai_key_pass
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-02A] ====================
++
++
+     sget-object v0, Lhm0/d;->a:Lhm0/d;
+ 
+     invoke-virtual {v0}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
+ 
+@@ -671,8 +684,13 @@
+     .registers 4
+ 
+     invoke-super {p0}, Ljp0/d;->onResume()V
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-02B | Attach Draggable CustomAI Floating Badge] ====================
++    invoke-static/range {p0 .. p0}, Lcom/rayneo/customai/CustomAiHooks;->onMainActivityResume(Landroid/app/Activity;)V
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-02B] ====================
++
++
+     sget-object v0, Lfm0/d;->a:Lfm0/d;
+ 
+     const-string v1, "ui.attached"
+ 
