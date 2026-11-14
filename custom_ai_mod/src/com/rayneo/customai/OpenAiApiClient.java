@@ -30,7 +30,7 @@ public final class OpenAiApiClient {
         public String protocol = PROTO_CHAT_COMPLETIONS;
         public String baseUrl = "https://api.openai.com/v1";
         public String apiKey = "";
-        public String model = "gpt-4o-mini";
+        public String model = "gpt-6-luna";
         public String systemPrompt = "";
         public String extraContextHint = "";
         public boolean injectTimeContext = true;
@@ -230,10 +230,30 @@ public final class OpenAiApiClient {
         return reply == null ? "" : reply.trim();
     }
 
+    public static boolean shouldOmitTemperature(String model, double temperature) {
+        if (temperature < 0) return true;
+        if (model == null) return false;
+        String m = model.trim().toLowerCase(Locale.ROOT);
+        int slash = m.lastIndexOf('/');
+        if (slash >= 0 && slash + 1 < m.length()) {
+            m = m.substring(slash + 1);
+        }
+        // Gemini 3.5-flash-lite / 3.6+ / Gemini 4 officially deprecated sampling params (temperature/top_p)
+        if (m.startsWith("gemini-4")
+                || m.startsWith("gemini-3.6")
+                || m.startsWith("gemini-3.7")
+                || m.startsWith("gemini-3.8")
+                || m.startsWith("gemini-3.5-flash-lite")) {
+            return true;
+        }
+        return false;
+    }
+
     static Map<String, Object> buildChatCompletionsRequest(
             EndpointConfig cfg, List<ConversationMemory.Message> history, String userText) {
         Map<String, Object> root = new LinkedHashMap<>();
-        root.put("model", nonEmpty(cfg.model, "gpt-4o-mini"));
+        String modelName = nonEmpty(cfg.model, "gpt-6-luna");
+        root.put("model", modelName);
         root.put("stream", cfg.streamEnabled);
 
         String effort = trimOrEmpty(cfg.reasoningEffort);
@@ -243,7 +263,9 @@ public final class OpenAiApiClient {
                 root.put("max_completion_tokens", cfg.maxTokens);
             }
         } else {
-            root.put("temperature", cfg.temperature);
+            if (!shouldOmitTemperature(modelName, cfg.temperature)) {
+                root.put("temperature", cfg.temperature);
+            }
             if (cfg.maxTokens > 0) {
                 root.put("max_tokens", cfg.maxTokens);
             }
@@ -269,7 +291,8 @@ public final class OpenAiApiClient {
     static Map<String, Object> buildResponsesRequest(
             EndpointConfig cfg, List<ConversationMemory.Message> history, String userText) {
         Map<String, Object> root = new LinkedHashMap<>();
-        root.put("model", nonEmpty(cfg.model, "gpt-4o-mini"));
+        String modelName = nonEmpty(cfg.model, "gpt-6-luna");
+        root.put("model", modelName);
         root.put("stream", cfg.streamEnabled);
 
         String effectiveSys = buildEffectiveSystemPrompt(cfg);
@@ -287,7 +310,7 @@ public final class OpenAiApiClient {
             reasoning.put("summary", "auto");
             root.put("reasoning", reasoning);
             // OpenAI /v1/responses rejects temperature when reasoning is configured
-        } else {
+        } else if (!shouldOmitTemperature(modelName, cfg.temperature)) {
             root.put("temperature", cfg.temperature);
         }
 

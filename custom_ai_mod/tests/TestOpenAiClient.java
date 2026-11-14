@@ -131,6 +131,15 @@ public final class TestOpenAiClient {
                 OpenAiApiClient.resolveEndpointUrl("https://proxy.example.com/v1/responses", "chat_completions"), "swap-to-chat");
         assertEq("https://open.bigmodel.cn/api/paas/v4/chat/completions",
                 OpenAiApiClient.resolveEndpointUrl("https://open.bigmodel.cn/api/paas/v4", "chat_completions"), "v4");
+        assertEq("https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+                OpenAiApiClient.resolveEndpointUrl("https://ark.cn-beijing.volces.com/api/v3", "chat_completions"), "volc-ark-v3");
+        assertEq("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+                OpenAiApiClient.resolveEndpointUrl("https://generativelanguage.googleapis.com/v1beta/openai", "chat_completions"), "gemini-compat");
+        assertEq(true, OpenAiApiClient.shouldOmitTemperature("gemini-4-hydrogen", 0.7), "gemini-4 omit temp");
+        assertEq(true, OpenAiApiClient.shouldOmitTemperature("google/gemini-4-carbon", 0.7), "openrouter gemini-4 omit temp");
+        assertEq(true, OpenAiApiClient.shouldOmitTemperature("gemini-3.8-flash", 0.7), "gemini-3.8 omit temp");
+        assertEq(false, OpenAiApiClient.shouldOmitTemperature("deepseek-flash", 0.7), "deepseek-flash keeps temp");
+        assertEq(false, OpenAiApiClient.shouldOmitTemperature("gpt-6-luna", 0.7), "gpt-6-luna keeps temp");
     }
 
     private static void testMemory() {

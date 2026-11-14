@@ -31,7 +31,7 @@ public final class CustomAiConfig {
     public String apiProtocol = OpenAiApiClient.PROTO_CHAT_COMPLETIONS;
     public String baseUrl = "https://api.openai.com/v1";
     public String apiKey = "";
-    public String model = "gpt-4o-mini";
+    public String model = "gpt-6-luna";
     public String systemPrompt = DEFAULT_SYSTEM_PROMPT;
     public double temperature = 0.7;
     public int maxTokens = 1024;
@@ -62,7 +62,7 @@ public final class CustomAiConfig {
         c.apiProtocol = sp.getString("apiProtocol", OpenAiApiClient.PROTO_CHAT_COMPLETIONS);
         c.baseUrl = sp.getString("baseUrl", "https://api.openai.com/v1");
         c.apiKey = sp.getString("apiKey", "");
-        c.model = sp.getString("model", "gpt-4o-mini");
+        c.model = sp.getString("model", "gpt-6-luna");
         c.systemPrompt = sp.getString("systemPrompt", DEFAULT_SYSTEM_PROMPT);
         c.temperature = Double.longBitsToDouble(
                 sp.getLong("temperatureBits", Double.doubleToLongBits(0.7)));
@@ -93,7 +93,7 @@ public final class CustomAiConfig {
                 .putString("apiProtocol", safe(apiProtocol, OpenAiApiClient.PROTO_CHAT_COMPLETIONS))
                 .putString("baseUrl", safe(baseUrl, "https://api.openai.com/v1"))
                 .putString("apiKey", apiKey == null ? "" : apiKey.trim())
-                .putString("model", safe(model, "gpt-4o-mini"))
+                .putString("model", safe(model, "gpt-6-luna"))
                 .putString("systemPrompt", systemPrompt == null ? "" : systemPrompt)
                 .putLong("temperatureBits", Double.doubleToLongBits(temperature))
                 .putInt("maxTokens", maxTokens)

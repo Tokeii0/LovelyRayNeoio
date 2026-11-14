@@ -555,7 +555,7 @@ public final class CustomAiSettingsDialog {
 
         addFieldLabel(activity, cardApi, "模型名称（Model）", true);
         final EditText etModel = makeEdit(
-                activity, "gpt-4o-mini / deepseek-chat", cfg.model, InputType.TYPE_CLASS_TEXT, true);
+                activity, "gpt-6-luna / deepseek-flash / gemini-4-hydrogen", cfg.model, InputType.TYPE_CLASS_TEXT, true);
         cardApi.addView(etModel);
 
         addFieldLabel(activity, cardApi, "思考强度（Reasoning Effort，思考模型可设为 Low/Medium）", true);
@@ -596,19 +596,19 @@ public final class CustomAiSettingsDialog {
             }
         });
 
-        addPresetChip(activity, presetRow1, "OpenAI Chat", new Runnable() {
-            @Override public void run() {
-                segProto.setSelectedIndex(0);
-                etBaseUrl.setText("https://api.openai.com/v1");
-                etModel.setText("gpt-4o-mini");
-                updateUrlPreview.run();
-            }
-        });
         addPresetChip(activity, presetRow1, "OpenAI Resp", new Runnable() {
             @Override public void run() {
                 segProto.setSelectedIndex(1);
                 etBaseUrl.setText("https://api.openai.com/v1");
-                etModel.setText("gpt-5-mini");
+                etModel.setText("gpt-6-luna");
+                updateUrlPreview.run();
+            }
+        });
+        addPresetChip(activity, presetRow1, "Gemini 4", new Runnable() {
+            @Override public void run() {
+                segProto.setSelectedIndex(0);
+                etBaseUrl.setText("https://generativelanguage.googleapis.com/v1beta/openai");
+                etModel.setText("gemini-4-hydrogen");
                 updateUrlPreview.run();
             }
         });
@@ -616,23 +616,31 @@ public final class CustomAiSettingsDialog {
             @Override public void run() {
                 segProto.setSelectedIndex(0);
                 etBaseUrl.setText("https://api.deepseek.com/v1");
-                etModel.setText("deepseek-chat");
+                etModel.setText("deepseek-flash");
                 updateUrlPreview.run();
             }
         });
-        addPresetChip(activity, presetRow2, "SiliconFlow", new Runnable() {
-            @Override public void run() {
-                segProto.setSelectedIndex(0);
-                etBaseUrl.setText("https://api.siliconflow.cn/v1");
-                etModel.setText("Qwen/Qwen2.5-72B-Instruct");
-                updateUrlPreview.run();
-            }
-        });
-        addPresetChip(activity, presetRow2, "阿里百炼兼容", new Runnable() {
+        addPresetChip(activity, presetRow2, "阿里百炼", new Runnable() {
             @Override public void run() {
                 segProto.setSelectedIndex(0);
                 etBaseUrl.setText("https://dashscope.aliyuncs.com/compatible-mode/v1");
-                etModel.setText("qwen-plus");
+                etModel.setText("qwen3.8-flash");
+                updateUrlPreview.run();
+            }
+        });
+        addPresetChip(activity, presetRow2, "Kimi K3.1", new Runnable() {
+            @Override public void run() {
+                segProto.setSelectedIndex(0);
+                etBaseUrl.setText("https://api.moonshot.cn/v1");
+                etModel.setText("kimi-k3.1-pro-highspeed");
+                updateUrlPreview.run();
+            }
+        });
+        addPresetChip(activity, presetRow2, "OpenRouter", new Runnable() {
+            @Override public void run() {
+                segProto.setSelectedIndex(0);
+                etBaseUrl.setText("https://openrouter.ai/api/v1");
+                etModel.setText("google/gemini-4-hydrogen");
                 updateUrlPreview.run();
             }
         });

@@ -129,29 +129,39 @@ adb install -r RayNeo_AI_1.0.20_CustomAI.apk
 ### 2. 填写接口参数
 | 配置项 | 说明与建议 |
 | :--- | :--- |
-| **接口协议** | 支持一键切换 **`/chat/completions`**（OpenRouter、DeepSeek、百炼、硅基流动、NewAPI 等通用）与 **`/responses`**（OpenAI 原生 Responses API，`GPT-5.4` 系列推荐） |
-| **快捷预设** | 顶部提供 `OpenAI Chat`、`OpenAI Resp`、`DeepSeek`、`SiliconFlow`、`阿里百炼兼容` 一键填入模板，填入后可自由修改模型 ID |
+| **接口协议** | 支持一键切换 **`/chat/completions`**（Gemini、DeepSeek、百炼、Kimi、智谱、火山方舟、硅基流动、OpenRouter、NewAPI 等通用）与 **`/responses`**（OpenAI 原生 Responses API，`GPT-6 / GPT-6.1` 系列推荐） |
+| **快捷预设** | 顶部提供 **`OpenAI Resp`、`Gemini 4`、`DeepSeek`、`阿里百炼`、`Kimi K3.1`、`OpenRouter`** 一键填入最新模板，填入后可自由修改任意模型 ID |
 | **Base URL** | 自动补全路径：填 `https://api.openai.com`、`https://openrouter.ai/api/v1` 或完整 `/v1/chat/completions` 均可自动识别。<br>*(注：遵循 Android 9+ 网络安全策略，请使用 **`https://`** 地址)* |
 | **API Key** | 填写对应平台的 `sk-...` 密钥（仅保存在手机本地应用私有目录 `SharedPreferences`） |
-| **模型名称 (Model)** | 如 `gpt-5.4`、`gpt-5.4-mini`、`claude-sonnet-4-6`、`gemini-3.5-flash`、`deepseek-v3.2`、`qwen3.5-plus`、`kimi-k2.5`、`glm-5` 等 |
+| **模型名称 (Model)** | 如 `gpt-6-luna`、`gpt-6.1-terra`、`gpt-6-astra`、`gemini-4-hydrogen`、`gemini-4-carbon`、`claude-sonnet-5-5`、`deepseek-flash`、`qwen3.8-flash`、`kimi-k3.1-pro`、`glm-5.3-flash` 等 |
 | **思考强度 (Reasoning Effort)** | 眼镜随身语音建议留空或选 `low`（首字响应更快）；复杂推理问答可选 `medium` / `high` |
 | **官方功能指令交给原版执行** | **建议保持开启（默认开启）**，确保天气、待办提醒、拍照、导航等全部走雷鸟官方真实接口 |
 | **播报完自动开启下一轮拾音** | 默认关闭（推荐关闭，避免眼镜刚显示完回答就被下一轮收音清屏） |
 
-### 3. 🌟 主流新模型填写参考（眼镜端实测推荐）
+### 3. 🌟 各大平台最新模型填写速查表（2026.11 最新梳理）
 
-> 👓 **配镜小贴士**：眼镜语音交互对**首字延迟（TTFT）**敏感，日常随身问答强烈优先推荐各家的 **`Flash` / `Mini` 极速档**或关闭重度深度思考；手机端 `Ask AI` 长文问答可切旗舰满血档。
+> 👓 **配镜选模建议**：智能眼镜语音交互对**首字延迟（TTFT）**高度敏感，日常随身对话强烈优先推荐下表中的 **「眼镜极速秒回推荐」**（各家最新 `Flash` / `Luna` / `Hydrogen` / `Haiku 5.5` / `Highspeed` 档，普遍具备 1M 上下文且毫秒级起播）；手机端 `Ask AI` 深度长文问答可随时切到右侧 **「旗舰满血 / 深度推理档」**。
 
-| 平台 / 厂商 | Base URL 示例 | 协议选择 | 眼镜极速秒回推荐 (低延迟) | 旗舰满血 / 深度推理推荐 |
+| 平台 / 厂商 | 官方兼容 Base URL | 协议选择 | 👓 眼镜极速秒回推荐 (低延迟首选) | 🧠 旗舰满血 / 深度推理推荐 |
 | :--- | :--- | :--- | :--- | :--- |
-| **OpenAI** | `https://api.openai.com/v1` | `/responses` 或 `/chat/completions` | `gpt-5.4-mini` / `gpt-5-mini` | `gpt-5.4` |
-| **Anthropic (兼容网关/中转)** | `https://openrouter.ai/api/v1` *(或自建 NewAPI)* | `/chat/completions` | `claude-sonnet-4-6` | `claude-opus-4-6` |
-| **Google Gemini** | `https://generativelanguage.googleapis.com/v1beta/openai` | `/chat/completions` | `gemini-3.5-flash` | `gemini-3.1-pro-preview` |
-| **DeepSeek 官方** | `https://api.deepseek.com/v1` | `/chat/completions` | `deepseek-v3.2` / `deepseek-chat` | `deepseek-v3.2-speciale` / `deepseek-reasoner` |
-| **阿里云百炼 (Qwen)** | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `/chat/completions` | `qwen3.5-flash` / `qwen3.5-plus` | `qwen3.8-max` |
-| **月之暗面 (Kimi)** | `https://api.moonshot.cn/v1` | `/chat/completions` | `kimi-k2.5` | `kimi-k2.5` |
-| **智谱 BigModel (GLM)** | `https://open.bigmodel.cn/api/paas/v4` | `/chat/completions` | `glm-5.3-flash` | `glm-5` |
-| **OpenRouter 聚合** | `https://openrouter.ai/api/v1` | `/chat/completions` | `google/gemini-3.5-flash` | `anthropic/claude-sonnet-4-6` / `openai/gpt-5.4` |
+| **OpenAI** | `https://api.openai.com/v1` | `/responses` 或 `/chat/completions` | `gpt-6-luna` / `gpt-6.1-sol` | `gpt-6-astra` / `gpt-6.1-terra-pro` / `gpt-6.1-terra` |
+| **Google Gemini** | `https://generativelanguage.googleapis.com/v1beta/openai` | `/chat/completions` | `gemini-4-hydrogen` / `gemini-3.8-flash` / `gemini-omni-1.2-flash` | `gemini-4-carbon` / `gemini-4-argon` |
+| **Anthropic Claude** *(兼容网关)* | `https://openrouter.ai/api/v1` *(或自建 NewAPI)* | `/chat/completions` | `claude-haiku-5-5` / `claude-sonnet-5-5` *(OpenRouter 加 `anthropic/` 前缀，小数点写 `.`)* | `claude-opus-5-5` / `claude-fable-5-2` |
+| **DeepSeek 官方** | `https://api.deepseek.com/v1` | `/chat/completions` | `deepseek-flash` *(指向最新 `DeepSeek-V4.1-Flash-1017`)* | `deepseek-v4-pro` *(指向 `DeepSeek-V4-Pro-0813`)* |
+| **阿里云百炼 (通义千问)** | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `/chat/completions` | `qwen3.8-flash` / `qwen3.8-omni-flash` | `qwen4-max-preview` / `qwen3.8-max` |
+| **月之暗面 (Kimi)** | `https://api.moonshot.cn/v1` | `/chat/completions` | `kimi-k3.1-pro-highspeed` / `kimi-k3` | `kimi-k3.1-pro` |
+| **智谱 BigModel (GLM)** | `https://open.bigmodel.cn/api/paas/v4` | `/chat/completions` | `glm-5.3-flash` / `glm-5.3-flashx` | `glm-5.3` / `glm-5.3-prime` / `glm-5.2` |
+| **字节火山方舟 (豆包 Seed)** | `https://ark.cn-beijing.volces.com/api/v3` | `/chat/completions` | `doubao-seed-2-1-turbo` / `doubao-seed-2-0-lite` *(或方舟接入点 `ep-...`)* | `doubao-seed-2-1-pro` / `doubao-seed-evolving` |
+| **MiniMax** | `https://api.minimaxi.com/v1` | `/chat/completions` | `MiniMax-M3.1-Flash` | `MiniMax-M3` |
+| **xAI (Grok)** | `https://api.x.ai/v1` | `/chat/completions` | `grok-4.6` / `grok-4.7` | `grok-4.7` |
+| **硅基流动 (SiliconFlow)** | `https://api.siliconflow.cn/v1` | `/chat/completions` | `deepseek-ai/DeepSeek-V4.1-Flash` / `MiniMaxAI/MiniMax-M3.1-Flash` | `deepseek-ai/DeepSeek-V4-Pro` / `MiniMaxAI/MiniMax-M3` |
+| **OpenRouter 聚合网关** | `https://openrouter.ai/api/v1` | `/chat/completions` | `google/gemini-4-hydrogen` / `openai/gpt-6-luna` / `deepseek/deepseek-v4.1-flash-1017` / `anthropic/claude-haiku-5.5` | `openai/gpt-6-astra` / `google/gemini-4-carbon` / `anthropic/claude-opus-5.5` / `anthropic/claude-fable-5.2` |
+
+> ⚠️ **近期各厂模型更替与参数避坑提示**：
+> 1. **DeepSeek 官方接口**：旧版 `deepseek-chat` 与 `deepseek-reasoner` **已正式停用下线**，直连 `api.deepseek.com` 请务必填写 **`deepseek-flash`** 或 **`deepseek-v4-pro`**。
+> 2. **Kimi 官方接口**：旧版 `moonshot-v1-*` 与 `kimi-k2.5` 已下线，请填写 **`kimi-k3.1-pro-highspeed`**（2~3 倍高速版，极适合眼镜语音）或 **`kimi-k3.1-pro`**。
+> 3. **Gemini 4 / 3.6+ 采样参数变更**：Google 官方自 `Gemini 3.6` 与 `Gemini 4` 系列起已废弃 `temperature` 参数，本项目 `OpenAiApiClient` **已内置自动识别豁免逻辑**，填写 `gemini-4-hydrogen` / `gemini-4-carbon` 时会自动剔除 `temperature` 字段，直连不会报错。
+> 4. **其他新锐开源/国产模型（OpenRouter 可直接体验）**：腾讯混元 **`tencent/hy4`**、百度文心 **`baidu/ernie-5.5-flash-preview`**、Mistral **`mistralai/mistral-large-4-0`** 均支持标准 `/chat/completions` 流式接入。
 
 填写完成后，点击面板内的 **「🔌 发送测试请求」**，看到返回 `✅ 连接成功` 与延迟毫秒数后，点击 **「💾 保存并立即生效」** 即可！  
 *(面板底部还支持 **「📋 导出配置」 / 「📥 导入配置」**，方便通过剪贴板备份或迁移整套 JSON 配置。)*
