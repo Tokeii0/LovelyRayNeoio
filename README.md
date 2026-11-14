@@ -12,7 +12,7 @@
 ## ✨ 为什么做 LovelyRayNeoio？
 
 雷鸟智能眼镜（尤其是 **雷鸟 io**）自带的语音唤醒（「小雷小雷」）、蓝牙收音（ASR）与原厂语音合成（TTS）体验非常顺滑，但受限于固定云端大模型：
-1. 无法自由切换自己常用的 **OpenAI (`GPT-5.4` / `GPT-5.4-mini`)、Claude (`Claude Sonnet 4.6` / `Opus 4.6`)、Gemini (`Gemini 3.1 Pro` / `Gemini 3.5 Flash`)、DeepSeek (`DeepSeek-V3.2`)、千问 (`Qwen3.5` / `Qwen3.8-Max`)、Kimi (`Kimi-K2.5`)、智谱 (`GLM-5`)** 以及 **OpenRouter / OneAPI / NewAPI** 等最新前沿模型；
+1. 无法自由切换自己常用的最新前沿模型；
 2. 若简单粗暴地拦截全部对话，会导致 **联网查天气、创建手机待办事项/提醒/倒计时、拍照录像、高德导航** 等官方原生技能失效；
 3. 雷鸟 io 官方云端目前 **不支持控制手机第三方音乐播放器（如网易云音乐、QQ音乐）切歌与读取当前播放曲目**。
 
