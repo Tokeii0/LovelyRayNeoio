@@ -489,14 +489,32 @@
 ### MOD-05: com/rayneo/rayneo_venus_sdk_plugin/o4.smali
 --- orig/o4.smali
 +++ patched/o4.smali
-@@ -4172,8 +4172,13 @@
+@@ -2670,8 +2670,13 @@
+ 
+ .method public static l(Lcom/rayneo/rayneo_venus_sdk_plugin/o4;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;[BLjava/lang/String;I)V
+     .registers 14
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-05B | Observe RayneoNet low-level outbound/inbound frames & errors] ====================
++    invoke-static/range {p0 .. p5}, Lcom/rayneo/customai/CustomAiHooks;->onRayneoNetTrace(Ljava/lang/Object;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;[B)V
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-05B] ====================
++
++
+     const/16 v0, 0x20
+ 
+     and-int/2addr p7, v0
+ 
+@@ -4172,8 +4177,17 @@
  .end method
  
  .method public final F(Ljava/lang/String;Ljava/util/Map;)V
      .registers 20
 +
-+    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-05 | Observe RayneoNet BLE events for Lyrics <-> Teleprompter real-time sync] ====================
-+    invoke-static/range {p0 .. p2}, Lcom/rayneo/customai/CustomAiHooks;->onRayneoNetEvent(Ljava/lang/Object;Ljava/lang/String;Ljava/util/Map;)V
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-05 | Observe & intercept RayneoNet BLE events for Lyrics <-> Teleprompter real-time sync] ====================
++    invoke-static/range {p0 .. p2}, Lcom/rayneo/customai/CustomAiHooks;->onRayneoNetEvent(Ljava/lang/Object;Ljava/lang/String;Ljava/util/Map;)Z
++    move-result v0
++    if-eqz v0, :cond_custom_ai_net_pass
++    return-void
++    :cond_custom_ai_net_pass
 +    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-05] ====================
 +
  

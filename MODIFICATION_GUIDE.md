@@ -57,7 +57,7 @@ flowchart LR
 | **MOD-03L~P** | `com.rayneo.airuntime.controller.AssistantController` | `nativeOnSpeechStatus` / `VadStatusChange` / `AudioRecordStart` / 重复 `AudioRecordEnd` / `Notify` 过滤，防止眼镜显示 3~4 字后被云端状态关闭或覆盖 | [MOD-03_AssistantController.diff](./custom_ai_mod/annotations/diffs/MOD-03_AssistantController.diff) |
 | **MOD-03Q** | `com.rayneo.airuntime.controller.AssistantController` | `startNextRound()` 扩容 `.registers 1 -> 2`，在 C++ 已停流时自动重新拉起 `startWorkflow()` | [MOD-03_AssistantController.diff](./custom_ai_mod/annotations/diffs/MOD-03_AssistantController.diff) |
 | **MOD-04A~D** | `com.rayneo.airuntime.controller.AskAITask` | `initTask` / `startTask` / `stopTask` / `releaseTask` 接管手机端 Ask AI 对话 | [MOD-04_AskAITask.diff](./custom_ai_mod/annotations/diffs/MOD-04_AskAITask.diff) |
-| **MOD-05** | `com.rayneo.rayneo_venus_sdk_plugin.o4` | `F(String, Map)` 旁路监听 `RayneoNet` 蓝牙事件（`TELEPROMPTER` 握手应答 / 镜腿退出、`fileShareSuccess`、蓝牙重连），配合 `w.t(v0)` 实现音乐 `.lrc` 歌词与眼镜提词器毫秒级滚动同步 | [MOD-05_RayneoNetBridge_o4.diff](./custom_ai_mod/annotations/diffs/MOD-05_RayneoNetBridge_o4.diff) |
+| **MOD-05 / 05B** | `com.rayneo.rayneo_venus_sdk_plugin.o4` | `F(String, Map)` 监听并按需拦截专属歌词槽位 `TELEPROMPTER` / `fileShareSuccess` 事件（避免官方 Flutter 报 `Manuscript missing`），`l(...)` 追踪底层收发帧，配合 `w.u(v0)` + `w.v(File, devId, SmallCore, "")` 实现 `.lrc` 歌词自动进入实时提词与 `0x08` 毫秒级无刷新同步 | [MOD-05_RayneoNetBridge_o4.diff](./custom_ai_mod/annotations/diffs/MOD-05_RayneoNetBridge_o4.diff) |
 
 汇总差异文件：[ALL_MODIFICATIONS.diff](./custom_ai_mod/annotations/diffs/ALL_MODIFICATIONS.diff)
 

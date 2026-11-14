@@ -449,6 +449,17 @@ public final class TestOpenAiClient {
         assertEq("811c9dc5", LyricsTeleprompterBridge.computeFnv1aHex(new byte[0]), "fnv1a empty");
         assertEq("e40c292c", LyricsTeleprompterBridge.computeFnv1aHex("a".getBytes(StandardCharsets.UTF_8)), "fnv1a 'a'");
         assertEq("bf9cf968", LyricsTeleprompterBridge.computeFnv1aHex("foobar".getBytes(StandardCharsets.UTF_8)), "fnv1a 'foobar'");
+        String capturedRayNeoSample =
+                "testlineabcdefghijklmnopqrstuvwxyzrayneolyricssynctes"
+                + "tlineabcdefghijklmnopqrstuvwxyzrayneolyricssynctestli"
+                + "ne3abcdefghijklmnopqrstuvwxyzrayneolyricssynctestlin"
+                + "e4abcdefghijklmnopqrstuvwxyzrayneolyricssynctestline"
+                + "5abcdefghijklmnopqrstuvwxyzrayneolyricssynctestneab"
+                + "cdefghijklmnopqrstuvwxyzrayneolyricssynctestline7abc"
+                + "defghijklmnopqrstuvwxyzrayneolyricssynctest";
+        assertEq("f4d8664f",
+                LyricsTeleprompterBridge.computeFnv1aHex(capturedRayNeoSample.getBytes(StandardCharsets.UTF_8)),
+                "fnv1a live RayNeo iO ground-truth match");
 
         // 2. HTML entity decoding (QQ Music style)
         String htmlLrc = "[00&#58;01&#46;50]词&#58;周杰伦&nbsp;&amp;&nbsp;方文山&#10;[00&#58;05&#46;00]故事的小黄花&#x21;";
@@ -513,8 +524,59 @@ public final class TestOpenAiClient {
         assertEq(true, startObj.get("snippetMode"), "start snippetMode");
         assertEq(3, JsonMini.getInt(startObj, "scroll", 0), "start manual scroll=3");
         assertEq(420, JsonMini.getInt(startObj, "width", 0), "start HUD width=420");
+        assertEq(4, JsonMini.getInt(startObj, "leading", 0), "start HUD leading=4");
         Map<String, Object> sInfo = JsonMini.getMap(startObj, "snippetInfo");
         assertEq(ms.lineByteOffsets[0], JsonMini.getInt(sInfo, "inlineOffset", -1), "start inlineOffset==pageOffset");
+
+        // Verify RayNeo iO ground-truth 0x01(type=3) + 0x02(file-transfer) + 0x03 + 0x08(autoSync=false) builders
+        assertEq(LyricsTeleprompterBridge.LYRICS_SLOT_DID, ms.did, "canonical UUIDv7 slot DID");
+        assertEq(false, LyricsTeleprompterBridge.isLyricsDid("01a1d990-2df3-7085-ba63-039e3f574cdc"), "user note DID is foreign");
+
+        String listJson = LyricsTeleprompterBridge.buildListUpsertJson(ms, ms.lineByteOffsets[1]);
+        Map<String, Object> listObj = JsonMini.parseObject(listJson);
+        assertEq(2, JsonMini.getInt(listObj, "action", 0), "0x01 list action=2");
+        assertEq(3, JsonMini.getInt(listObj, "type", 0), "0x01 list type=3 upsert");
+
+        String fileStartJson = LyricsTeleprompterBridge.buildAppStartRequestJson(
+                ms, ms.lineByteOffsets[1], ms.lineByteOffsets[1]);
+        Map<String, Object> fileStartObj = JsonMini.parseObject(fileStartJson);
+        assertEq(null, fileStartObj.get("snippetMode"), "RayNeo iO 0x02 omits snippetMode");
+        assertEq(ms.checksum, JsonMini.getString(fileStartObj, "checksum"), "RayNeo iO 0x02 checksum");
+        assertEq(3, LyricsTeleprompterBridge.HUD_COUNTDOWN, "HUD_COUNTDOWN must be 3");
+        assertEq(3, JsonMini.getInt(fileStartObj, "countdown", 0), "0x02 countdown==3 (never 0)");
+
+        String glassesAcceptJson = LyricsTeleprompterBridge.buildGlassesStartAcceptJson(
+                ms, 0, 0);
+        Map<String, Object> glassesAcceptObj = JsonMini.parseObject(glassesAcceptJson);
+        assertEq(2, JsonMini.getInt(glassesAcceptObj, "action", 0), "0x02 accept action=2");
+        assertEq(1, JsonMini.getInt(glassesAcceptObj, "code", 0), "0x02 accept code=1");
+        assertEq(3, JsonMini.getInt(glassesAcceptObj, "countdown", 0), "0x02 accept countdown==3");
+
+        String cueStartJson = LyricsTeleprompterBridge.buildAppCueingStartRequestJson(
+                ms, ms.lineByteOffsets[1], ms.lineByteOffsets[1]);
+        Map<String, Object> cueStartObj = JsonMini.parseObject(cueStartJson);
+        assertEq(1, JsonMini.getInt(cueStartObj, "code", 0), "0x03 cueing code=1");
+        assertEq(3, JsonMini.getInt(cueStartObj, "countdown", 0), "0x03 countdown==3 (never 0)");
+
+        // BMP sanitizer & [歌词] header verification + event interception verification
+        assertEq("Hello 世界!", LyricsTeleprompterBridge.sanitizeBmpText("🎵Hello\u3000世界🔥\uFEFF!"), "BMP sanitizer strips 4-byte emoji");
+        assertEq(true, ms.lines[0].startsWith("[歌词] "), "manuscript header uses BMP [歌词]");
+        assertEq(false, listJson.contains("🎵"), "0x01 list upsert never emits 4-byte emoji");
+        assertEq(true, LyricsTeleprompterBridge.shouldInterceptTeleprompterPayload(encoded), "intercepts LYRICS_SLOT_DID");
+        byte[] foreignPkt = LyricsTeleprompterBridge.encodeGlassesMsg(
+                LyricsTeleprompterBridge.MSG_START,
+                "{\"action\":1,\"did\":\"01a1d990-2df3-7085-ba63-039e3f574cdc\"}", null, 1);
+        assertEq(false, LyricsTeleprompterBridge.shouldInterceptTeleprompterPayload(foreignPkt), "passes foreign DID");
+        byte[] emptyDidStopAck = LyricsTeleprompterBridge.encodeGlassesMsg(
+                LyricsTeleprompterBridge.MSG_STOP,
+                "{\"action\":2,\"code\":1}", null, 1);
+        assertEq(false, LyricsTeleprompterBridge.shouldInterceptTeleprompterPayload(emptyDidStopAck), "passes empty-DID 0x06 ack");
+
+        String ioProgJson = LyricsTeleprompterBridge.buildProgressUpdateJson(
+                ms.did, ms.lineByteOffsets[1], ms.lineByteOffsets[1], false);
+        Map<String, Object> ioProgObj = JsonMini.parseObject(ioProgJson);
+        assertEq(false, ioProgObj.get("autoSync"), "RayNeo iO 0x08 autoSync=false");
+        assertEq(null, ioProgObj.get("snippetMode"), "RayNeo iO 0x08 omits snippetMode");
 
         String progJson = LyricsTeleprompterBridge.buildProgressUpdateJson(
                 ms.did, ms.lineByteOffsets[1], ms.lineByteOffsets[2], true);
@@ -522,6 +584,7 @@ public final class TestOpenAiClient {
         assertEq(1, JsonMini.getInt(progObj, "action", 0), "prog action=1");
         assertEq(ms.lineByteOffsets[1], JsonMini.getInt(progObj, "pageOffset", -1), "prog pageOffset");
         assertEq(ms.lineByteOffsets[2], JsonMini.getInt(progObj, "highLightOffset", -1), "prog highLightOffset");
+        assertEq(false, progObj.get("autoSync"), "prog autoSync=false");
         assertEq(ms.lineByteOffsets[1],
                 JsonMini.getInt(JsonMini.getMap(progObj, "snippetInfo"), "inlineOffset", -1),
                 "prog snippetInfo.inlineOffset");
@@ -561,14 +624,61 @@ public final class TestOpenAiClient {
         CustomAiConfig cfg2 = CustomAiConfig.fromJsonString(cfg1.toJsonString());
         assertEq(true, cfg2.syncLyricsToTeleprompter, "CustomAiConfig syncLyricsToTeleprompter roundtrip");
 
-        // 6. Mock HTTP NetEase & QQ Music LRC fetching
+        // 6. Mock HTTP NetEase & QQ Music LRC fetching + VIP Japanese / Multi-Artist Lyrics Resolver
+        server.removeContext("/api/cloudsearch/pc");
+        server.createContext("/api/cloudsearch/pc", new HttpHandler() {
+            @Override
+            public void handle(HttpExchange ex) throws IOException {
+                String q = java.net.URLDecoder.decode(
+                        ex.getRequestURI().getRawQuery() == null ? "" : ex.getRequestURI().getRawQuery(),
+                        "UTF-8");
+                String resp;
+                if (q.contains("クリスマスソング")) {
+                    // #1 is free Eng.ver cover by another singer; #2 is VIP (st=-1) original by back number with tns:["圣诞颂歌"]
+                    resp = "{\"result\":{\"songs\":["
+                            + "{\"id\":999001,\"name\":\"クリスマスソング (Eng.ver Cover)\",\"ar\":[{\"name\":\"Yuniko_南南\"}],\"al\":{\"name\":\"Cover\"},\"dt\":250000,\"privilege\":{\"st\":0}},"
+                            + "{\"id\":36871044,\"name\":\"クリスマスソング\",\"tns\":[\"圣诞颂歌\"],\"ar\":[{\"name\":\"back number\"}],\"al\":{\"name\":\"シャンデリア\"},\"dt\":340000,\"privilege\":{\"st\":-1}}"
+                            + "]}}";
+                } else if (q.contains("幸せ")) {
+                    // #1 is unrelated Chinese song "幸福" by 齐豫; #2 is VIP (st=-1) original "幸せ" by back number
+                    resp = "{\"result\":{\"songs\":["
+                            + "{\"id\":888002,\"name\":\"幸福\",\"ar\":[{\"name\":\"齐豫\"}],\"al\":{\"name\":\"幸福\"},\"dt\":260000,\"privilege\":{\"st\":0}},"
+                            + "{\"id\":699012,\"name\":\"幸せ\",\"tns\":[\"幸福\"],\"ar\":[{\"name\":\"back number\"}],\"al\":{\"name\":\"花束\"},\"dt\":395000,\"privilege\":{\"st\":-1}}"
+                            + "]}}";
+                } else if (q.contains("素颜")) {
+                    // #1 is DJ karaoke cover; #2 is copyright-restricted (st=-100) original duet 许嵩/何曼婷
+                    resp = "{\"result\":{\"songs\":["
+                            + "{\"id\":777003,\"name\":\"素颜 (DJ慢摇伴奏)\",\"ar\":[{\"name\":\"DJ阿奇\"}],\"al\":{\"name\":\"热歌\"},\"dt\":210000,\"privilege\":{\"st\":0}},"
+                            + "{\"id\":167827,\"name\":\"素颜\",\"ar\":[{\"name\":\"许嵩\"},{\"name\":\"何曼婷\"}],\"al\":{\"name\":\"素颜\"},\"dt\":238000,\"privilege\":{\"st\":-100}}"
+                            + "]}}";
+                } else {
+                    resp = "{\"result\":{\"songs\":[]}}";
+                }
+                byte[] bytes = resp.getBytes(StandardCharsets.UTF_8);
+                ex.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+                ex.sendResponseHeaders(200, bytes.length);
+                try (OutputStream os = ex.getResponseBody()) {
+                    os.write(bytes);
+                }
+            }
+        });
+
         server.createContext("/api/song/lyric", new HttpHandler() {
             @Override
             public void handle(HttpExchange ex) throws IOException {
                 String q = ex.getRequestURI().getRawQuery();
-                String resp = (q != null && q.contains("id=27731176"))
-                        ? "{\"code\":200,\"lrc\":{\"lyric\":\"[00:01.00]穿华丽的服装\\n[00:05.20]为原始的渴望而站着\\n\"}}"
-                        : "{\"code\":200,\"nolyric\":true}";
+                String resp;
+                if (q != null && q.contains("id=27731176")) {
+                    resp = "{\"code\":200,\"lrc\":{\"lyric\":\"[00:01.00]穿华丽的服装\\n[00:05.20]为原始的渴望而站着\\n\"}}";
+                } else if (q != null && q.contains("id=36871044")) {
+                    resp = "{\"code\":200,\"lrc\":{\"lyric\":\"[00:26.10]どこかで鐘が鳴って\\n[00:31.50]らしくない言葉が浮かんで\\n\"}}";
+                } else if (q != null && q.contains("id=699012")) {
+                    resp = "{\"code\":200,\"lrc\":{\"lyric\":\"[00:18.00]最初からあなたの幸せしか願っていないから\\n\"}}";
+                } else if (q != null && q.contains("id=167827")) {
+                    resp = "{\"code\":200,\"lrc\":{\"lyric\":\"[00:21.00]又是一个安静的晚上\\n[00:25.00]一个人窝在摇椅里乘凉\\n\"}}";
+                } else {
+                    resp = "{\"code\":200,\"nolyric\":true}";
+                }
                 byte[] bytes = resp.getBytes(StandardCharsets.UTF_8);
                 ex.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
                 ex.sendResponseHeaders(200, bytes.length);
@@ -608,6 +718,28 @@ public final class TestOpenAiClient {
         assertEq(true, qqOnline.hasSyncedLyrics, "mock QQ LRC synced");
         assertEq("QQ音乐", qqOnline.sourcePlatform, "mock QQ sourcePlatform");
         assertEq("从出生那年就飘着", qqOnline.lines[qqOnline.lines.length - 1], "mock QQ last line");
+
+        // Verify VIP Japanese + translated suffix + multi-artist lyric resolution without hints!
+        assertEq("36871044",
+                LyricsTeleprompterBridge.resolveNetEaseSongIdForLyrics(
+                        "クリスマスソング (圣诞颂歌)", "back number", 340000L, mockHost),
+                "VIP Japanese クリスマスソング resolves to original back number (not Eng.ver cover)");
+        LyricsTeleprompterBridge.LyricsManuscript xmasMs =
+                LyricsTeleprompterBridge.fetchLyricsManuscriptOnline(
+                        "クリスマスソング (圣诞颂歌)", "back number", 340000L,
+                        SystemMediaBridge.PKG_NETEASE, mockHost, mockHost);
+        assertEq(true, xmasMs.hasSyncedLyrics, "クリスマスソング synced");
+        assertEq("らしくない言葉が浮かんで", xmasMs.lines[xmasMs.lines.length - 1], "クリスマスソング Japanese lyric");
+
+        assertEq("699012",
+                LyricsTeleprompterBridge.resolveNetEaseSongIdForLyrics(
+                        "幸せ (幸福)", "back number", 395000L, mockHost),
+                "VIP Japanese 幸せ resolves to back number (not 齐豫 幸福)");
+
+        assertEq("167827",
+                LyricsTeleprompterBridge.resolveNetEaseSongIdForLyrics(
+                        "素颜", "许嵩/何曼婷", 238000L, mockHost),
+                "Grayed-out duet 素颜 resolves to 许嵩/何曼婷 (not DJ karaoke)");
     }
 
     private static void writeSse(OutputStream os, String chunk) throws IOException {

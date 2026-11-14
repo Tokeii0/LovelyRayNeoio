@@ -2058,9 +2058,18 @@ public final class CustomAiHooks {
 
     // ==================== MOD-05: RayneoNet BLE Event Tap ====================
 
-    public static void onRayneoNetEvent(Object bridge, String eventName, Map data) {
+    public static boolean onRayneoNetEvent(Object bridge, String eventName, Map data) {
         try {
-            LyricsTeleprompterBridge.onRayneoNetEvent(bridge, eventName, data);
+            return LyricsTeleprompterBridge.onRayneoNetEvent(bridge, eventName, data);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    public static void onRayneoNetTrace(
+            Object bridge, String direction, String eventName, String summary, Map meta, byte[] rawPayload) {
+        try {
+            LyricsTeleprompterBridge.onRayneoNetTrace(bridge, direction, eventName, summary, meta, rawPayload);
         } catch (Throwable ignored) {}
     }
 

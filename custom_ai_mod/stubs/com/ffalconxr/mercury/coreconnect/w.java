@@ -6,6 +6,13 @@ import java.util.Map;
 import kotlin.jvm.functions.Function2;
 
 public final class w {
+    public static final class a {
+        public final w a() {
+            return null;
+        }
+    }
+
+    public static final a g = new a();
     public static volatile w h;
 
     public static Map j() {

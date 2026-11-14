@@ -588,17 +588,40 @@ def patch_ask_ai_task(src: str) -> str:
 
 def patch_rayneo_net_bridge(src: str) -> str:
     # MOD-05: Tap RayneoNet incoming BLE events (TELEPROMPTER responses, fileShareSuccess, BT state)
+    # Intercepts LYRICS_SLOT_DID events (returns true -> early return) so official Flutter never throws Manuscript missing!
     block_5 = wrap_block(
         "MOD-05",
-        "Observe RayneoNet BLE events for Lyrics <-> Teleprompter real-time sync",
-        "    invoke-static/range {p0 .. p2}, Lcom/rayneo/customai/CustomAiHooks;->onRayneoNetEvent(Ljava/lang/Object;Ljava/lang/String;Ljava/util/Map;)V",
+        "Observe & intercept RayneoNet BLE events for Lyrics <-> Teleprompter real-time sync",
+        "\n".join(
+            [
+                "    invoke-static/range {p0 .. p2}, Lcom/rayneo/customai/CustomAiHooks;->onRayneoNetEvent(Ljava/lang/Object;Ljava/lang/String;Ljava/util/Map;)Z",
+                "    move-result v0",
+                "    if-eqz v0, :cond_custom_ai_net_pass",
+                "    return-void",
+                "    :cond_custom_ai_net_pass",
+            ]
+        ),
     )
-    return replace_in_method(
+    out = replace_in_method(
         src,
         r"public final F\(Ljava/lang/String;Ljava/util/Map;\)V",
         r"^\s*\.(?:registers|locals)\s+\d+",
         block_5,
         "MOD-05 o4.F(eventName, data)",
+    )
+
+    # MOD-05B: Tap RayneoNet low-level packet logger o4.l(o4, dir, event, summary, meta, rawBytes, decoded, mask)
+    block_5b = wrap_block(
+        "MOD-05B",
+        "Observe RayneoNet low-level outbound/inbound frames & errors",
+        "    invoke-static/range {p0 .. p5}, Lcom/rayneo/customai/CustomAiHooks;->onRayneoNetTrace(Ljava/lang/Object;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;[B)V",
+    )
+    return replace_in_method(
+        out,
+        r"public static l\(Lcom/rayneo/rayneo_venus_sdk_plugin/o4;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;\[BLjava/lang/String;I\)V",
+        r"^\s*\.(?:registers|locals)\s+\d+",
+        block_5b,
+        "MOD-05B o4.l(bridge, dir, event, summary, meta, rawBytes, ...)",
     )
 
 

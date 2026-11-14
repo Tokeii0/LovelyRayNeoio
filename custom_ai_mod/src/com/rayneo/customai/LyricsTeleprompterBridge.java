@@ -13,11 +13,13 @@ import com.ffalconxr.mercury.coreconnect.v0;
 import com.ffalconxr.mercury.coreconnect.w;
 import com.rayneo.rayneo_venus_sdk_plugin.h4;
 import com.rayneo.rayneo_venus_sdk_plugin.o4;
+import kotlin.jvm.functions.Function2;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
@@ -27,10 +29,13 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -78,10 +83,12 @@ public final class LyricsTeleprompterBridge {
     private static final int SESSION_ACTIVE = 4;
     private static final int SESSION_PAUSED = 5;
 
-    // HUD layout constants matching TeleprompterScene.speech (width=420, size=20, leading=24, scroll=manual)
+    // HUD layout constants matching official RayNeo iO Teleprompter wire protocol
+    // CRITICAL: countdown MUST be >= 3 (official default = 3); countdown=0 causes SmallCore RTOS timer assert freeze!
+    public static final int HUD_COUNTDOWN = 3;
     public static final int HUD_WIDTH = 420;
     public static final int HUD_FONT_SIZE = 20;
-    public static final int HUD_LEADING = 24;
+    public static final int HUD_LEADING = 4;
     public static final int HUD_SCROLL_MANUAL = 3;
     public static final int HUD_SPEED = 120;
     public static final int HUD_GEAR_LOW = 1;
@@ -89,15 +96,20 @@ public final class LyricsTeleprompterBridge {
 
     // 34 half-width units = 17 full-width CJK chars -> guaranteed single visual line on 420px @ 20sp HUD
     public static final int MAX_LINE_HALF_WIDTH = 34;
-    private static final int MAX_SNIPPET_BYTES = 28000;
     private static final int HTTP_TIMEOUT_MS = 4200;
     private static final long TICK_ACTIVE_MS = 250L;
     private static final long TICK_IDLE_MS = 1800L;
     private static final long LYRIC_LEAD_COMPENSATION_MS = 120L;
-    private static final long HANDSHAKE_TIMEOUT_MS = 4500L;
+    private static final long HANDSHAKE_TIMEOUT_MS = 9000L;
+    private static final long CUEING_SETTLE_DELAY_MS = 550L;
+    private static final long TRACK_SWITCH_STOP_SETTLE_MS = 650L;
+    private static final long POST_COUNTDOWN_GUARD_MS = (HUD_COUNTDOWN * 1000L) + 350L;
+    private static final long MIN_PROGRESS_INTERVAL_MS = 320L;
     private static final long BACKOFF_RETRY_MS = 10000L;
     private static final long VOICE_BUSY_MAX_MS = 22000L;
 
+    // Canonical UUIDv7-formatted slot DID so lyrics upsert cleanly in place in glasses Teleprompter list
+    public static final String LYRICS_SLOT_DID = "01a1d990-7261-796e-856f-6c7972696373";
     private static final String LYRICS_DID_PREFIX = "99";
 
     private static final Pattern PAT_WAKE_PREFIX = Pattern.compile(
@@ -222,15 +234,24 @@ public final class LyricsTeleprompterBridge {
     // State accessed exclusively on workerHandler thread
     private static LyricsManuscript activeManuscript;
     private static int sessionState = SESSION_IDLE;
-    private static boolean sessionSnippetMode = true;
+    private static boolean sessionSnippetMode = false;
     private static int lastSentLineIdx = -1;
     private static long stateEnteredUptimeMs = 0L;
+    private static long cueingReadyAtUptimeMs = 0L;
+    private static long lastProgressSentUptimeMs = 0L;
     private static int handshakeAttempts = 0;
+    private static int attemptSeq = 0;
+    private static boolean fileShareDoneForAttempt = false;
+    private static boolean readyCode7ReceivedForAttempt = false;
+    private static boolean cueingStartScheduled = false;
+    private static boolean cueingStartRetriedOnce = false;
     private static boolean conflictRetried = false;
     private static long backoffUntilUptimeMs = 0L;
-    private static String pendingFileTaskId = "";
+    private static volatile String pendingFileTaskId = "";
     private static String stoppedByGlassesTrackKey = "";
     private static boolean foreignTeleprompterActive = false;
+    private static long forcePushUntilUptimeMs = 0L;
+    private static String lastLoggedDevDiag = "";
     private static volatile boolean voiceAssistantBusy = false;
     private static volatile long voiceBusySinceUptimeMs = 0L;
     private static volatile String lastStatusSummary = "未启动";
@@ -238,6 +259,14 @@ public final class LyricsTeleprompterBridge {
     private static final Runnable TICK_RUNNABLE = new Runnable() {
         @Override
         public void run() {
+            onWorkerTick();
+        }
+    };
+
+    private static final Runnable NOTIFY_MEDIA_RUNNABLE = new Runnable() {
+        @Override
+        public void run() {
+            backoffUntilUptimeMs = 0L;
             onWorkerTick();
         }
     };
@@ -305,11 +334,14 @@ public final class LyricsTeleprompterBridge {
                 backoffUntilUptimeMs = 0L;
                 handshakeAttempts = 0;
                 conflictRetried = false;
+                forcePushUntilUptimeMs = SystemClock.uptimeMillis() + 15000L;
                 if (sessionState != SESSION_IDLE && activeManuscript != null) {
                     sendStopPacket(activeManuscript, computeCurrentPageOffset(activeManuscript, 0L));
                     resetSessionVars();
+                    scheduleTick(280L);
+                } else {
+                    onWorkerTick();
                 }
-                onWorkerTick();
                 if (onUiDone != null) {
                     onUiDone.run();
                 }
@@ -320,13 +352,8 @@ public final class LyricsTeleprompterBridge {
     public static void notifyMediaChanged() {
         Handler h = workerHandler;
         if (h == null) return;
-        h.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                backoffUntilUptimeMs = 0L;
-                onWorkerTick();
-            }
-        }, 350L);
+        h.removeCallbacks(NOTIFY_MEDIA_RUNNABLE);
+        h.postDelayed(NOTIFY_MEDIA_RUNNABLE, 350L);
     }
 
     public static void onVoiceSessionActive(final boolean active) {
@@ -387,29 +414,35 @@ public final class LyricsTeleprompterBridge {
 
     // ==================== MOD-05: Incoming RayneoNet Events ====================
 
-    public static void onRayneoNetEvent(final Object bridgeObj, final String eventName, final Map data) {
+    /**
+     * Inspects an incoming RayneoNet event, dispatches our lyrics state machine on workerHandler,
+     * and returns {@code true} ONLY when the event belongs exclusively to {@link #LYRICS_SLOT_DID}
+     * so official Flutter never rejects our private lyrics DID with {@code code=5} (Manuscript missing).
+     */
+    public static boolean onRayneoNetEvent(final Object bridgeObj, final String eventName, final Map data) {
         try {
             if (bridgeObj instanceof o4) {
                 lastSeenBridge = (o4) bridgeObj;
             }
-            if (eventName == null) return;
+            if (eventName == null) return false;
 
             if ("messageReceived".equals(eventName)) {
                 Map msgMap = unwrapMessageMap(data);
-                if (msgMap == null) return;
+                if (msgMap == null) return false;
                 Object devObj = msgMap.get("deviceId");
                 if (devObj instanceof String && !((String) devObj).isEmpty()) {
                     lastSeenDeviceId = (String) devObj;
                 }
                 Object bizObj = msgMap.get("businessId");
                 if (!"TELEPROMPTER".equals(bizObj)) {
-                    return;
+                    return false;
                 }
                 Object payloadObj = msgMap.get("payload");
                 if (!(payloadObj instanceof byte[])) {
-                    return;
+                    return false;
                 }
                 final byte[] payload = (byte[]) payloadObj;
+                final boolean interceptForLyrics = shouldInterceptTeleprompterPayload(payload);
                 Handler h = workerHandler;
                 if (h != null) {
                     h.post(new Runnable() {
@@ -419,11 +452,20 @@ public final class LyricsTeleprompterBridge {
                         }
                     });
                 }
+                return interceptForLyrics;
+            } else if ("messageSendError".equals(eventName)) {
+                Log.w(TAG, "RayneoNet messageSendError: " + data);
+                return false;
             } else if ("fileShareSuccess".equals(eventName) || "fileShareFailed".equals(eventName)) {
-                if (data == null) return;
+                Log.i(TAG, "RayneoNet " + eventName + ": " + data);
+                if (data == null) return false;
                 Object taskObj = data.get("taskId");
                 final String taskId = taskObj instanceof String ? (String) taskObj : "";
+                Object fileObj = data.get("fileName");
+                final String fileName = fileObj instanceof String ? (String) fileObj : "";
                 final boolean ok = "fileShareSuccess".equals(eventName);
+                final boolean isOurs = isLyricsDid(fileName)
+                        || (!taskId.isEmpty() && taskId.equals(pendingFileTaskId));
                 Handler h = workerHandler;
                 if (h != null && !taskId.isEmpty()) {
                     h.post(new Runnable() {
@@ -433,7 +475,9 @@ public final class LyricsTeleprompterBridge {
                         }
                     });
                 }
+                return isOurs;
             } else if ("brStateChanged".equals(eventName) || "bondStateChanged".equals(eventName)) {
+                Log.i(TAG, "RayneoNet " + eventName + ": " + data);
                 Handler h = workerHandler;
                 if (h != null) {
                     h.postDelayed(new Runnable() {
@@ -444,10 +488,96 @@ public final class LyricsTeleprompterBridge {
                         }
                     }, 600L);
                 }
+                return false;
             }
         } catch (Throwable t) {
             Log.w(TAG, "onRayneoNetEvent error", t);
         }
+        return false;
+    }
+
+    public static boolean shouldInterceptTeleprompterPayload(byte[] rawPayload) {
+        if (rawPayload == null || rawPayload.length == 0) return false;
+        GlassesMsg msg = decodeGlassesMsg(rawPayload);
+        if (msg == null || msg.jsonMessage == null || msg.jsonMessage.isEmpty()) {
+            return false;
+        }
+        try {
+            Map<String, Object> jb = JsonMini.parseObject(msg.jsonMessage);
+            String did = safe(JsonMini.getString(jb, "did"));
+            if (did.isEmpty() && jb.get("did") instanceof Number) {
+                did = String.valueOf(((Number) jb.get("did")).longValue());
+            }
+            return isLyricsDid(did);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    public static void onRayneoNetTrace(
+            final Object bridgeObj,
+            final String direction,
+            final String eventName,
+            final String summary,
+            final Map meta,
+            final byte[] rawPayload) {
+        try {
+            if (bridgeObj instanceof o4) {
+                lastSeenBridge = (o4) bridgeObj;
+            }
+            String biz = "";
+            String msgId = "";
+            String devId = "";
+            if (meta != null) {
+                Object dObj = meta.get("deviceId");
+                if (dObj instanceof String && !((String) dObj).isEmpty()) {
+                    devId = (String) dObj;
+                    if ("inbound".equals(direction)) {
+                        lastSeenDeviceId = devId;
+                    }
+                }
+                Object bObj = meta.get("businessId");
+                if (bObj != null) biz = String.valueOf(bObj);
+                Object mObj = meta.get("msgId");
+                if (mObj != null) msgId = String.valueOf(mObj);
+            }
+            boolean isPrompter = "TELEPROMPTER".equalsIgnoreCase(biz) || "20".equals(biz) || "0x14".equalsIgnoreCase(biz);
+            boolean isOurs = msgId.startsWith("lyr_");
+            boolean isErr = eventName != null && (eventName.contains("error") || eventName.contains("fail"));
+            if (isPrompter || isOurs || isErr) {
+                GlassesMsg gm = rawPayload != null && rawPayload.length > 0 ? decodeGlassesMsg(rawPayload) : null;
+                if (gm != null && gm.type == MSG_AUDIO_DATA && !isErr) {
+                    return;
+                }
+                Log.i(TAG, "[BLE-TRACE] dir=" + direction + " ev=" + eventName
+                        + " biz=" + biz + " msgId=" + msgId + " dev=" + devId
+                        + " frame=" + formatPayloadDiag(rawPayload));
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static String formatPayloadDiag(byte[] raw) {
+        if (raw == null) return "null";
+        if (raw.length == 0) return "empty";
+        GlassesMsg gm = decodeGlassesMsg(raw);
+        StringBuilder sb = new StringBuilder();
+        sb.append("len=").append(raw.length);
+        if (gm != null && (gm.type > 0 || (gm.jsonMessage != null && !gm.jsonMessage.isEmpty()))) {
+            sb.append(" GlassesMsg{v=").append(gm.version)
+              .append(",type=0x").append(Integer.toHexString(gm.type))
+              .append(",seq=").append(gm.sequence)
+              .append(",mode=").append(gm.mode)
+              .append(",dataLen=").append(gm.data != null ? gm.data.length : 0)
+              .append(",json=").append(gm.jsonMessage)
+              .append("}");
+        } else {
+            int n = Math.min(raw.length, 48);
+            sb.append(" hex=");
+            for (int i = 0; i < n; i++) {
+                sb.append(String.format(Locale.US, "%02x", raw[i] & 0xFF));
+            }
+        }
+        return sb.toString();
     }
 
     public static Map unwrapMessageMap(Map eventData) {
@@ -529,32 +659,39 @@ public final class LyricsTeleprompterBridge {
             boolean isPlaying = track.isPlaying();
             long interpPosMs = track.getInterpolatedPositionMs() + (isPlaying ? LYRIC_LEAD_COMPENSATION_MS : 0L);
 
+            boolean forcePush = SystemClock.uptimeMillis() < forcePushUntilUptimeMs;
+
             // Track changed?
             if (activeManuscript == null || !trackKey.equals(activeManuscript.trackKey)) {
-                if (!isPlaying && sessionState == SESSION_IDLE) {
+                if (!isPlaying && !forcePush && sessionState == SESSION_IDLE) {
                     // Music is paused and no session open yet -> wait until user hits play
                     lastStatusSummary = "音乐已暂停：" + track.formatSongDisplay();
                     scheduleTick(TICK_IDLE_MS);
                     return;
                 }
+                if (sessionState != SESSION_IDLE && activeManuscript != null) {
+                    // Cleanly stop previous song's session first and allow 650ms settle before sending new 0x02!
+                    sendStopPacket(activeManuscript, computeCurrentPageOffset(activeManuscript, 0L));
+                    activeManuscript = null;
+                    resetSessionVars();
+                    backoffUntilUptimeMs = SystemClock.uptimeMillis() + TRACK_SWITCH_STOP_SETTLE_MS;
+                    scheduleTick(TRACK_SWITCH_STOP_SETTLE_MS + 40L);
+                    return;
+                }
                 LyricsManuscript ms = getOrFetchManuscript(track);
                 activeManuscript = ms;
-                sessionState = SESSION_IDLE;
-                lastSentLineIdx = -1;
-                handshakeAttempts = 0;
-                conflictRetried = false;
+                resetSessionVars();
                 backoffUntilUptimeMs = 0L;
-                pendingFileTaskId = "";
             }
 
             long now = SystemClock.uptimeMillis();
             if (now < backoffUntilUptimeMs) {
-                scheduleTick(1000L);
+                scheduleTick(Math.min(1000L, Math.max(80L, backoffUntilUptimeMs - now)));
                 return;
             }
 
-            // Handle music pause/stop transitions
-            if (!isPlaying) {
+            // Handle music pause/stop transitions (allow manual syncNow forcePush to finish handshake even when paused)
+            if (!isPlaying && !forcePush) {
                 if (sessionState == SESSION_ACTIVE) {
                     sendPausePacket(activeManuscript);
                     sessionState = SESSION_PAUSED;
@@ -565,7 +702,7 @@ public final class LyricsTeleprompterBridge {
                 return;
             }
 
-            // Music IS playing!
+            // Music IS playing (or manual syncNow forcePush active)!
             if (sessionState == SESSION_PAUSED) {
                 sendResumePacket(activeManuscript);
                 sessionState = SESSION_ACTIVE;
@@ -582,6 +719,18 @@ public final class LyricsTeleprompterBridge {
             if (sessionState == SESSION_STARTING
                     || sessionState == SESSION_WAITING_FILE_SHARE
                     || sessionState == SESSION_STARTING_CUEING) {
+                // Gentle single retry of 0x03 if Preview took slightly longer to initialize on glasses
+                if (sessionState == SESSION_STARTING_CUEING
+                        && !cueingStartScheduled
+                        && !cueingStartRetriedOnce
+                        && now - stateEnteredUptimeMs > 2600L
+                        && activeManuscript != null) {
+                    cueingStartRetriedOnce = true;
+                    Log.i(TAG, "0x03 unanswered after 2.6s -> retrying 0x03 without re-uploading 0x02");
+                    sendCueingStartRequest(activeManuscript, deviceId);
+                    scheduleTick(TICK_ACTIVE_MS);
+                    return;
+                }
                 if (now - stateEnteredUptimeMs > HANDSHAKE_TIMEOUT_MS) {
                     if (handshakeAttempts < 2) {
                         Log.i(TAG, "Handshake timeout in state=" + sessionState + ", retrying...");
@@ -599,10 +748,15 @@ public final class LyricsTeleprompterBridge {
             }
 
             if (sessionState == SESSION_ACTIVE && activeManuscript != null) {
+                if (now < cueingReadyAtUptimeMs) {
+                    scheduleTick(Math.min(TICK_ACTIVE_MS, Math.max(60L, cueingReadyAtUptimeMs - now)));
+                    return;
+                }
                 int lineIdx = findActiveLineIndex(activeManuscript.lineTimesMs, interpPosMs);
-                if (lineIdx != lastSentLineIdx) {
+                if (lineIdx != lastSentLineIdx && (now - lastProgressSentUptimeMs >= MIN_PROGRESS_INTERVAL_MS)) {
                     sendProgressUpdatePacket(activeManuscript, lineIdx);
                     lastSentLineIdx = lineIdx;
+                    lastProgressSentUptimeMs = now;
                     String curLine = (lineIdx >= 0 && lineIdx < activeManuscript.lines.length)
                             ? activeManuscript.lines[lineIdx] : "";
                     lastStatusSummary = "同步中：" + track.formatSongDisplay()
@@ -619,29 +773,45 @@ public final class LyricsTeleprompterBridge {
     private static void startSessionForManuscript(LyricsManuscript ms, long posMs, String deviceId) {
         if (ms == null) return;
         int lineIdx = findActiveLineIndex(ms.lineTimesMs, posMs);
-        int hiOff = ms.lineByteOffsets[lineIdx];
-        int pageOff = ms.lineByteOffsets[Math.max(0, lineIdx - 1)];
 
+        attemptSeq++;
         handshakeAttempts++;
+        fileShareDoneForAttempt = false;
+        readyCode7ReceivedForAttempt = false;
+        cueingStartScheduled = false;
+        cueingStartRetriedOnce = false;
+        pendingFileTaskId = "";
         stateEnteredUptimeMs = SystemClock.uptimeMillis();
         lastSentLineIdx = lineIdx;
 
-        if (ms.utf8Bytes.length <= MAX_SNIPPET_BYTES) {
-            sessionSnippetMode = true;
-            sessionState = SESSION_STARTING;
-            String json = buildAppStartSnippetRequestJson(ms, pageOff, hiOff);
-            byte[] pkt = encodeGlassesMsg(MSG_START, json, ms.utf8Bytes, SEQ_GEN.getAndIncrement());
-            sendBleTeleprompter(pkt, deviceId, true);
-            lastStatusSummary = "正在投送歌词：" + ms.title;
-            Log.i(TAG, "Sent 0x02 AppStartRequest (snippetMode, bytes=" + ms.utf8Bytes.length
-                    + ", lines=" + ms.lines.length + ", did=" + ms.did + ")");
-        } else {
-            // Very large LRC (>28KB): go straight to file share + 0x03 cueing start
-            initiateFileShareFallback(ms, deviceId);
+        // Send 0x02 AppStartRequest FIRST with pageOffset=0, highLightOffset=0, countdown=3
+        // (matching official RayNeo iO wire capture: 0x02 -> code=1 -> fileShare -> code=7 -> 0x01(type=3) -> 0x03)
+        String json = buildAppStartRequestJson(ms, 0, 0);
+        byte[] pkt = encodeGlassesMsg(MSG_START, json, null, 0);
+        boolean queued = sendBleTeleprompter(pkt, deviceId, true);
+        if (!queued) {
+            Log.w(TAG, "Failed to queue 0x02 AppStartRequest (wInst=null or exception, dev=" + deviceId + ")");
+            sessionState = SESSION_IDLE;
+            backoffUntilUptimeMs = SystemClock.uptimeMillis() + 3000L;
+            lastStatusSummary = "蓝牙通道尚未就绪，稍后重试";
+            return;
         }
+        sessionSnippetMode = false;
+        sessionState = SESSION_STARTING;
+        lastStatusSummary = "正在投送歌词：" + ms.title;
+        Log.i(TAG, "Sent 0x02 AppStartRequest (bytes=" + ms.utf8Bytes.length
+                + ", lines=" + ms.lines.length + ", checksum=" + ms.checksum
+                + ", did=" + ms.did + ", dev=" + deviceId + ")");
     }
 
-    private static void initiateFileShareFallback(LyricsManuscript ms, String deviceId) {
+    private static void sendListUpsertPacket(LyricsManuscript ms, String deviceId, int offset) {
+        if (ms == null || deviceId == null || deviceId.isEmpty()) return;
+        String listJson = buildListUpsertJson(ms, offset);
+        byte[] listPkt = encodeGlassesMsg(MSG_LIST_UPDATE, listJson, null, 0);
+        sendBleTeleprompter(listPkt, deviceId, true);
+    }
+
+    private static void initiateFileShareTransfer(LyricsManuscript ms, String deviceId) {
         Application app = appContext;
         if (app == null || ms == null) return;
         try {
@@ -649,55 +819,137 @@ public final class LyricsTeleprompterBridge {
             if (!dir.exists()) {
                 dir.mkdirs();
             }
-            File f = new File(dir, ms.did + ".txt");
+            // CRITICAL: Official RayNeo iO firmware expects fileName == exact ms.did (NO ".txt" extension!)
+            File f = new File(dir, ms.did);
             try (FileOutputStream fos = new FileOutputStream(f)) {
                 fos.write(ms.utf8Bytes);
             }
             w wInst = resolveCoreConnectW();
             if (wInst != null) {
-                String taskId = wInst.v(f, deviceId, wb.q.SmallCore, null);
+                fileShareDoneForAttempt = false;
+                readyCode7ReceivedForAttempt = false;
+                cueingStartScheduled = false;
+                String taskId = wInst.v(f, deviceId, wb.q.SmallCore, "");
                 if (taskId != null && !taskId.isEmpty()) {
                     pendingFileTaskId = taskId;
                     sessionSnippetMode = false;
                     sessionState = SESSION_WAITING_FILE_SHARE;
                     stateEnteredUptimeMs = SystemClock.uptimeMillis();
-                    Log.i(TAG, "Started fileShare fallback taskId=" + taskId + " for did=" + ms.did);
+                    Log.i(TAG, "Started fileShare taskId=" + taskId + " file=" + f.getName()
+                            + " bytes=" + ms.utf8Bytes.length + " dev=" + deviceId);
                     return;
                 }
             }
         } catch (Throwable t) {
-            Log.w(TAG, "initiateFileShareFallback failed", t);
+            Log.w(TAG, "initiateFileShareTransfer failed", t);
         }
         backoffUntilUptimeMs = SystemClock.uptimeMillis() + BACKOFF_RETRY_MS;
         sessionState = SESSION_IDLE;
     }
 
-    private static void handleFileShareEvent(String taskId, boolean success) {
-        if (sessionState != SESSION_WAITING_FILE_SHARE || !taskId.equals(pendingFileTaskId)) {
+    private static void handleFileShareEvent(final String taskId, boolean success) {
+        if (!taskId.equals(pendingFileTaskId)) {
             return;
         }
-        pendingFileTaskId = "";
         if (!success || activeManuscript == null) {
+            pendingFileTaskId = "";
             sessionState = SESSION_IDLE;
             backoffUntilUptimeMs = SystemClock.uptimeMillis() + BACKOFF_RETRY_MS;
             return;
         }
-        String deviceId = resolveConnectedGlassesDeviceId();
-        if (deviceId.isEmpty()) return;
+        fileShareDoneForAttempt = true;
+        final int expectedAttempt = attemptSeq;
+        if (readyCode7ReceivedForAttempt) {
+            scheduleCueingStartAfterPreviewSettle(expectedAttempt, "fileShareSuccess+code7");
+            return;
+        }
+        // Fallback if inbound 0x02 (code=7) packet is omitted on another firmware revision
+        Handler h = workerHandler;
+        if (h != null) {
+            h.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (attemptSeq == expectedAttempt
+                            && sessionState == SESSION_WAITING_FILE_SHARE
+                            && !cueingStartScheduled
+                            && activeManuscript != null) {
+                        readyCode7ReceivedForAttempt = true;
+                        scheduleCueingStartAfterPreviewSettle(expectedAttempt, "fileShareSuccess_1400ms_fallback");
+                    }
+                }
+            }, 1400L);
+        }
+    }
 
-        int lineIdx = Math.max(0, lastSentLineIdx);
-        int hiOff = activeManuscript.lineByteOffsets[Math.min(lineIdx, activeManuscript.lineByteOffsets.length - 1)];
-        int pageOff = activeManuscript.lineByteOffsets[Math.max(0, lineIdx - 1)];
+    private static void scheduleCueingStartAfterPreviewSettle(final int expectedAttempt, final String trigger) {
+        if (cueingStartScheduled || activeManuscript == null || attemptSeq != expectedAttempt) {
+            return;
+        }
+        cueingStartScheduled = true;
+        pendingFileTaskId = "";
+        sessionState = SESSION_STARTING_CUEING;
+        stateEnteredUptimeMs = SystemClock.uptimeMillis();
+
+        String devId = resolveConnectedGlassesDeviceId();
+        if (!devId.isEmpty()) {
+            // Match official RayNeo iO order: upsert 0x01(type=3) right after 0x02(code=7), then settle 550ms -> 0x03
+            sendListUpsertPacket(activeManuscript, devId, 0);
+        }
+
+        Handler h = workerHandler;
+        if (h != null) {
+            Log.i(TAG, "Scheduling 0x03 AppCueingStartRequest in " + CUEING_SETTLE_DELAY_MS
+                    + "ms (trigger=" + trigger + ")");
+            h.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (attemptSeq != expectedAttempt
+                            || sessionState != SESSION_STARTING_CUEING
+                            || activeManuscript == null) {
+                        return;
+                    }
+                    cueingStartScheduled = false; // 0x03 is now on the wire
+                    String curDev = resolveConnectedGlassesDeviceId();
+                    if (!curDev.isEmpty()) {
+                        sendCueingStartRequest(activeManuscript, curDev);
+                    }
+                }
+            }, CUEING_SETTLE_DELAY_MS);
+        }
+    }
+
+    private static void sendCueingStartRequest(LyricsManuscript ms, String deviceId) {
+        if (ms == null || deviceId == null || deviceId.isEmpty()) return;
+        pendingFileTaskId = "";
+
+        // Compute live playback position + 3s countdown lookahead so when the 3s HUD countdown finishes,
+        // the glasses land directly on the exact lyric line being sung at that moment!
+        int lineIdx = Math.max(0, Math.min(lastSentLineIdx, ms.lineByteOffsets.length - 1));
+        Application app = appContext;
+        if (app != null) {
+            SystemMediaBridge.TrackInfo liveTrack = SystemMediaBridge.getCurrentTrack(app);
+            if (liveTrack != null && liveTrack.hasSong()
+                    && normalizeTrackKey(liveTrack.title, liveTrack.artist).equals(ms.trackKey)) {
+                long targetMs = liveTrack.getInterpolatedPositionMs()
+                        + (liveTrack.isPlaying() ? (HUD_COUNTDOWN * 1000L + LYRIC_LEAD_COMPENSATION_MS) : 0L);
+                lineIdx = findActiveLineIndex(ms.lineTimesMs, targetMs);
+            }
+        }
+        int hiOff = ms.lineByteOffsets[lineIdx];
+        int pageOff = hiOff;
+        lastSentLineIdx = lineIdx;
 
         sessionState = SESSION_STARTING_CUEING;
         stateEnteredUptimeMs = SystemClock.uptimeMillis();
-        String json = buildAppCueingStartRequestJson(activeManuscript, pageOff, hiOff);
-        byte[] pkt = encodeGlassesMsg(MSG_CUEING_START, json, null, SEQ_GEN.getAndIncrement());
+        String json = buildAppCueingStartRequestJson(ms, pageOff, hiOff);
+        byte[] pkt = encodeGlassesMsg(MSG_CUEING_START, json, null, 0);
         sendBleTeleprompter(pkt, deviceId, true);
-        Log.i(TAG, "File share succeeded -> sent 0x03 AppCueingStartRequest for did=" + activeManuscript.did);
+        Log.i(TAG, "Sent 0x03 AppCueingStartRequest (countdown=" + HUD_COUNTDOWN
+                + ", offset=" + hiOff + ", lineIdx=" + lineIdx + ", did=" + ms.did + ")");
     }
 
     private static void handleIncomingTeleprompterPayload(byte[] rawPayload) {
+        Log.i(TAG, "[RX-TELEPROMPTER] " + formatPayloadDiag(rawPayload));
         GlassesMsg msg = decodeGlassesMsg(rawPayload);
         if (msg == null) return;
 
@@ -718,74 +970,157 @@ public final class LyricsTeleprompterBridge {
         int action = JsonMini.getInt(jb, "action", 0);
         int code = JsonMini.getInt(jb, "code", 0);
 
-        // Detect foreign (official Flutter) teleprompter session so we never collide with user's notes
-        if (!did.isEmpty() && !isLyricsDid(did)) {
-            if (msg.type == MSG_STOP) {
-                foreignTeleprompterActive = false;
-            } else if (msg.type == MSG_START || msg.type == MSG_CUEING_START || msg.type == MSG_PROGRESS_UPDATE) {
+        // Detect foreign (official Flutter) teleprompter session so we never collide with user's own notes
+        if (msg.type == MSG_STOP && !isLyricsDid(did)) {
+            foreignTeleprompterActive = false;
+            if (!did.isEmpty()) return;
+        } else if (!did.isEmpty() && !isLyricsDid(did)) {
+            if (msg.type == MSG_START || msg.type == MSG_CUEING_START || msg.type == MSG_PROGRESS_UPDATE) {
                 foreignTeleprompterActive = true;
                 resetSessionVars();
             }
             return;
         }
 
-        String deviceId = resolveConnectedGlassesDeviceId();
+        final String deviceId = resolveConnectedGlassesDeviceId();
 
         switch (msg.type) {
+            case MSG_LIST_UPDATE: {
+                // Glasses reconnected and requested full list sync (action=1, type=1).
+                // Wait 900ms so official Flutter's type=1 list response finishes first, then upsert our lyrics slot!
+                if (action == 1 && !deviceId.isEmpty()) {
+                    Application app = appContext;
+                    if (app != null && CustomAiConfig.load(app).syncLyricsToTeleprompter) {
+                        Handler h = workerHandler;
+                        if (h != null) {
+                            h.postDelayed(new Runnable() {
+                                @Override
+                                public void run() {
+                                    String curDev = resolveConnectedGlassesDeviceId();
+                                    if (curDev.isEmpty()) return;
+                                    LyricsManuscript snapMs = activeManuscript;
+                                    if (snapMs == null && appContext != null) {
+                                        SystemMediaBridge.TrackInfo t = SystemMediaBridge.getCurrentTrack(appContext);
+                                        if (t != null && t.hasSong()) {
+                                            snapMs = getOrFetchManuscript(t);
+                                        }
+                                    }
+                                    if (snapMs != null) {
+                                        sendListUpsertPacket(snapMs, curDev, 0);
+                                    }
+                                }
+                            }, 900L);
+                        }
+                    }
+                }
+                break;
+            }
+
             case MSG_START: {
                 if (action == 2) {
                     // GlassesStartResponse to our 0x02 AppStartRequest
                     if (activeManuscript == null || (!did.isEmpty() && !did.equals(activeManuscript.did))) {
                         return;
                     }
-                    if (code == 1 || code == 23) {
-                        sessionState = SESSION_ACTIVE;
-                        stateEnteredUptimeMs = SystemClock.uptimeMillis();
-                        handshakeAttempts = 0;
-                        lastSentLineIdx = -1; // Push exact current line on next tick
-                        Log.i(TAG, "Teleprompter 0x02 handshake ACTIVE (code=" + code + ", did=" + did + ")");
-                        scheduleTick(50L);
-                    } else if (code == 7) {
-                        Log.i(TAG, "Glasses requested full file transfer (code=7) for did=" + did);
+                    if (code == 1) {
+                        // Ground-truth on RayNeo iO: code=1 on 0x02 means "0x02 accepted, now transfer file via fileShare!"
+                        Log.i(TAG, "Glasses accepted 0x02 (code=1) -> initiating fileShare for did=" + did);
                         if (!deviceId.isEmpty()) {
-                            initiateFileShareFallback(activeManuscript, deviceId);
+                            initiateFileShareTransfer(activeManuscript, deviceId);
                         }
+                    } else if (code == 7) {
+                        // Ground-truth on RayNeo iO: code=7 means "file received & FNV-1a verified on glasses!"
+                        readyCode7ReceivedForAttempt = true;
+                        final int expectedAttempt = attemptSeq;
+                        if (fileShareDoneForAttempt) {
+                            scheduleCueingStartAfterPreviewSettle(expectedAttempt, "code7+fileShareDone");
+                        } else {
+                            // Wait up to 650ms for SPP fileShareSuccess teardown callback so we never send 0x03 mid-SPP close
+                            Log.i(TAG, "Received 0x02(code=7) before fileShareSuccess -> waiting up to 650ms for SPP settle");
+                            Handler h = workerHandler;
+                            if (h != null) {
+                                h.postDelayed(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        if (attemptSeq == expectedAttempt && !cueingStartScheduled
+                                                && sessionState == SESSION_WAITING_FILE_SHARE) {
+                                            fileShareDoneForAttempt = true;
+                                            scheduleCueingStartAfterPreviewSettle(expectedAttempt, "code7_650ms_settle");
+                                        }
+                                    }
+                                }, 650L);
+                            }
+                        }
+                    } else if (code == 23) {
+                        // Cached on glasses without fileShare needed
+                        fileShareDoneForAttempt = true;
+                        readyCode7ReceivedForAttempt = true;
+                        scheduleCueingStartAfterPreviewSettle(attemptSeq, "code23_cached");
+                    } else if (code == 2) {
+                        // Session rejected / aborted on glasses -> cancel pending fileShare fallback cleanly
+                        Log.w(TAG, "Glasses returned 0x02 code=2 (aborted/busy) -> resetting & backing off 4s");
+                        resetSessionVars();
+                        backoffUntilUptimeMs = SystemClock.uptimeMillis() + 4000L;
                     } else if (isConflictCode(code) && !conflictRetried) {
                         conflictRetried = true;
                         Log.i(TAG, "Teleprompter conflict code=" + code + " -> sending conflict ack & retrying");
                         String ackJson = buildConflictAckJson(activeManuscript.did);
                         sendBleTeleprompter(
-                                encodeGlassesMsg(MSG_START, ackJson, null, SEQ_GEN.getAndIncrement()),
+                                encodeGlassesMsg(MSG_START, ackJson, null, 0),
                                 deviceId, true);
-                        sessionState = SESSION_IDLE;
-                        handshakeAttempts = 0;
-                        scheduleTick(280L);
+                        resetSessionVars();
+                        scheduleTick(450L);
                     } else if (code == 18 || code == 24) {
                         // Folded temple legs / busy state
-                        sessionState = SESSION_IDLE;
+                        resetSessionVars();
                         backoffUntilUptimeMs = SystemClock.uptimeMillis() + BACKOFF_RETRY_MS;
                         lastStatusSummary = "眼镜镜腿已折叠或界面占用";
                     } else {
                         Log.w(TAG, "Unhandled 0x02 response code=" + code);
                     }
-                } else if (action == 1 && activeManuscript != null && did.equals(activeManuscript.did)) {
-                    // SnippetServe: Glasses requesting snippet data for our manuscript!
-                    Map<String, Object> sInfo = JsonMini.getMap(jb, "snippetInfo");
-                    boolean skipData = sInfo != null && Boolean.TRUE.equals(sInfo.get("skipData"));
-                    boolean isCurrent = sInfo == null || !Boolean.FALSE.equals(sInfo.get("isCurrent"));
-                    int idx = Math.max(0, lastSentLineIdx);
-                    int hiOff = activeManuscript.lineByteOffsets[Math.min(idx, activeManuscript.lineByteOffsets.length - 1)];
-                    int pageOff = activeManuscript.lineByteOffsets[Math.max(0, idx - 1)];
+                } else if (action == 1 && isLyricsDid(did) && !deviceId.isEmpty()) {
+                    if (activeManuscript == null && appContext != null) {
+                        SystemMediaBridge.TrackInfo t = SystemMediaBridge.getCurrentTrack(appContext);
+                        if (t != null && t.hasSong()) {
+                            activeManuscript = getOrFetchManuscript(t);
+                        } else {
+                            activeManuscript = parseLrcAndBuildManuscript("当前暂无播放歌曲", "", "", "");
+                        }
+                    }
+                    if (activeManuscript == null) break;
 
-                    String respJson = buildSnippetServeResponseJson(
-                            activeManuscript, pageOff, hiOff, skipData, isCurrent);
-                    byte[] dataBytes = skipData ? null : activeManuscript.utf8Bytes;
-                    sendBleTeleprompter(
-                            encodeGlassesMsg(MSG_START, respJson, dataBytes, msg.sequence),
-                            deviceId, true);
-                    sessionState = SESSION_ACTIVE;
-                    stateEnteredUptimeMs = SystemClock.uptimeMillis();
-                    Log.i(TAG, "Served 0x02 snippet request (skipData=" + skipData + ") for did=" + did);
+                    if (jb.containsKey("snippetInfo")) {
+                        Map<String, Object> sInfo = JsonMini.getMap(jb, "snippetInfo");
+                        boolean skipData = sInfo != null && Boolean.TRUE.equals(sInfo.get("skipData"));
+                        boolean isCurrent = sInfo == null || !Boolean.FALSE.equals(sInfo.get("isCurrent"));
+                        int idx = Math.max(0, Math.min(lastSentLineIdx, activeManuscript.lineByteOffsets.length - 1));
+                        int hiOff = activeManuscript.lineByteOffsets[idx];
+                        String respJson = buildSnippetServeResponseJson(
+                                activeManuscript, hiOff, hiOff, skipData, isCurrent);
+                        byte[] dataBytes = skipData ? null : activeManuscript.utf8Bytes;
+                        sendBleTeleprompter(
+                                encodeGlassesMsg(MSG_START, respJson, dataBytes, msg.sequence),
+                                deviceId, true);
+                        sessionSnippetMode = true;
+                        sessionState = SESSION_ACTIVE;
+                        stateEnteredUptimeMs = SystemClock.uptimeMillis();
+                        cueingReadyAtUptimeMs = stateEnteredUptimeMs + 400L;
+                    } else {
+                        // User opened our lyrics item directly from the glasses' Teleprompter menu!
+                        attemptSeq++;
+                        fileShareDoneForAttempt = false;
+                        readyCode7ReceivedForAttempt = false;
+                        cueingStartScheduled = false;
+                        cueingStartRetriedOnce = false;
+                        stoppedByGlassesTrackKey = "";
+                        foreignTeleprompterActive = false;
+                        int hiOff = 0;
+                        String startAcceptJson = buildGlassesStartAcceptJson(activeManuscript, hiOff, hiOff);
+                        sendBleTeleprompter(
+                                encodeGlassesMsg(MSG_START, startAcceptJson, null, 0),
+                                deviceId, true);
+                        initiateFileShareTransfer(activeManuscript, deviceId);
+                    }
                 }
                 break;
             }
@@ -793,33 +1128,81 @@ public final class LyricsTeleprompterBridge {
             case MSG_CUEING_START: {
                 if (action == 2 && activeManuscript != null && (did.isEmpty() || did.equals(activeManuscript.did))) {
                     if (code == 1 || code == 23) {
+                        long now = SystemClock.uptimeMillis();
                         sessionState = SESSION_ACTIVE;
-                        stateEnteredUptimeMs = SystemClock.uptimeMillis();
+                        stateEnteredUptimeMs = now;
+                        cueingReadyAtUptimeMs = now + POST_COUNTDOWN_GUARD_MS;
                         handshakeAttempts = 0;
-                        lastSentLineIdx = -1;
-                        Log.i(TAG, "Teleprompter 0x03 cueing ACTIVE (code=" + code + ")");
-                        scheduleTick(50L);
+                        cueingStartScheduled = false;
+                        Log.i(TAG, "Teleprompter 0x03 cueing ACTIVE (code=" + code
+                                + ", countdown=" + HUD_COUNTDOWN + "s, did=" + activeManuscript.did + ")");
+                        scheduleTick(POST_COUNTDOWN_GUARD_MS);
                     } else if (isConflictCode(code) && !conflictRetried) {
                         conflictRetried = true;
                         String ackJson = buildConflictAckJson(activeManuscript.did);
                         sendBleTeleprompter(
-                                encodeGlassesMsg(MSG_CUEING_START, ackJson, null, SEQ_GEN.getAndIncrement()),
+                                encodeGlassesMsg(MSG_CUEING_START, ackJson, null, 0),
                                 deviceId, true);
-                        sessionState = SESSION_IDLE;
-                        handshakeAttempts = 0;
-                        scheduleTick(280L);
+                        resetSessionVars();
+                        scheduleTick(450L);
+                    } else if (code == 5) {
+                        // Glasses weren't in Preview yet -> retry smoothly
+                        Log.w(TAG, "0x03 returned code=5 -> resetting to retry after 1.5s");
+                        resetSessionVars();
+                        backoffUntilUptimeMs = SystemClock.uptimeMillis() + 1500L;
+                    }
+                } else if (action == 1 && isLyricsDid(did) && !deviceId.isEmpty()) {
+                    long now = SystemClock.uptimeMillis();
+                    stoppedByGlassesTrackKey = "";
+                    foreignTeleprompterActive = false;
+                    cueingStartScheduled = false;
+                    sendBleTeleprompter(
+                            encodeGlassesMsg(MSG_CUEING_START, buildSimpleAckJson(did), null, 0),
+                            deviceId, true);
+                    sessionState = SESSION_ACTIVE;
+                    stateEnteredUptimeMs = now;
+                    cueingReadyAtUptimeMs = now + POST_COUNTDOWN_GUARD_MS;
+                    lastSentLineIdx = -1;
+                    scheduleTick(POST_COUNTDOWN_GUARD_MS);
+                }
+                break;
+            }
+
+            case MSG_PAUSE: {
+                if (action == 1 && isLyricsDid(did)) {
+                    if (!deviceId.isEmpty()) {
+                        sendBleTeleprompter(
+                                encodeGlassesMsg(MSG_PAUSE, buildSimpleAckJson(did), null, 0),
+                                deviceId, true);
+                    }
+                    if (Boolean.TRUE.equals(jb.get("isCompleted")) && sessionState == SESSION_ACTIVE) {
+                        sessionState = SESSION_PAUSED;
                     }
                 }
                 break;
             }
 
-            case MSG_PAUSE:
             case MSG_RESUME: {
+                if (action == 1 && isLyricsDid(did)) {
+                    stoppedByGlassesTrackKey = "";
+                    if (!deviceId.isEmpty()) {
+                        sendBleTeleprompter(
+                                encodeGlassesMsg(MSG_RESUME, buildSimpleAckJson(did), null, 0),
+                                deviceId, true);
+                    }
+                    sessionState = SESSION_ACTIVE;
+                    cueingReadyAtUptimeMs = SystemClock.uptimeMillis() + 200L;
+                    lastSentLineIdx = -1;
+                    scheduleTick(200L);
+                }
+                break;
+            }
+
+            case MSG_PROGRESS_UPDATE: {
                 if (action == 1 && isLyricsDid(did) && !deviceId.isEmpty()) {
-                    String ack = buildSimpleAckJson(did);
                     sendBleTeleprompter(
-                            encodeGlassesMsg(msg.type, ack, null, msg.sequence),
-                            deviceId, true);
+                            encodeGlassesMsg(MSG_PROGRESS_UPDATE, buildSimpleAckJson(did), null, 0),
+                            deviceId, false);
                 }
                 break;
             }
@@ -829,7 +1212,7 @@ public final class LyricsTeleprompterBridge {
                     if (!deviceId.isEmpty()) {
                         String ack = buildSimpleAckJson(did);
                         sendBleTeleprompter(
-                                encodeGlassesMsg(MSG_STOP, ack, null, msg.sequence),
+                                encodeGlassesMsg(MSG_STOP, ack, null, 0),
                                 deviceId, true);
                     }
                     if (activeManuscript != null) {
@@ -843,16 +1226,18 @@ public final class LyricsTeleprompterBridge {
             }
 
             case MSG_CHECK_STATE: {
-                if (action == 1 && activeManuscript != null
+                int reportedState = JsonMini.getInt(jb, "state", -1);
+                if (action == 2 && reportedState == 3) {
+                    foreignTeleprompterActive = false;
+                } else if (action == 1 && activeManuscript != null
                         && (sessionState == SESSION_ACTIVE || sessionState == SESSION_PAUSED)
                         && !deviceId.isEmpty()) {
-                    int idx = Math.max(0, lastSentLineIdx);
-                    int hiOff = activeManuscript.lineByteOffsets[Math.min(idx, activeManuscript.lineByteOffsets.length - 1)];
-                    int pageOff = activeManuscript.lineByteOffsets[Math.max(0, idx - 1)];
+                    int idx = Math.max(0, Math.min(lastSentLineIdx, activeManuscript.lineByteOffsets.length - 1));
+                    int hiOff = activeManuscript.lineByteOffsets[idx];
                     int stateVal = (sessionState == SESSION_ACTIVE) ? 1 : 2;
-                    String respJson = buildCheckStateResponseJson(activeManuscript, stateVal, pageOff, hiOff);
+                    String respJson = buildCheckStateResponseJson(activeManuscript, stateVal, hiOff, hiOff);
                     sendBleTeleprompter(
-                            encodeGlassesMsg(MSG_CHECK_STATE, respJson, null, msg.sequence),
+                            encodeGlassesMsg(MSG_CHECK_STATE, respJson, null, 0),
                             deviceId, true);
                 }
                 break;
@@ -878,7 +1263,9 @@ public final class LyricsTeleprompterBridge {
     }
 
     public static boolean isLyricsDid(String did) {
-        return did != null && did.length() == 10 && did.startsWith(LYRICS_DID_PREFIX);
+        if (did == null || did.isEmpty()) return false;
+        if (LYRICS_SLOT_DID.equalsIgnoreCase(did)) return true;
+        return did.length() == 10 && did.startsWith(LYRICS_DID_PREFIX);
     }
 
     private static void sendProgressUpdatePacket(LyricsManuscript ms, int lineIdx) {
@@ -886,9 +1273,9 @@ public final class LyricsTeleprompterBridge {
         if (deviceId.isEmpty() || ms == null) return;
         int safeIdx = Math.max(0, Math.min(lineIdx, ms.lineByteOffsets.length - 1));
         int hiOff = ms.lineByteOffsets[safeIdx];
-        int pageOff = ms.lineByteOffsets[Math.max(0, safeIdx - 1)];
+        int pageOff = hiOff;
         String json = buildProgressUpdateJson(ms.did, pageOff, hiOff, sessionSnippetMode);
-        byte[] pkt = encodeGlassesMsg(MSG_PROGRESS_UPDATE, json, null, SEQ_GEN.getAndIncrement());
+        byte[] pkt = encodeGlassesMsg(MSG_PROGRESS_UPDATE, json, null, 0);
         sendBleTeleprompter(pkt, deviceId, false);
     }
 
@@ -899,7 +1286,7 @@ public final class LyricsTeleprompterBridge {
         m.put("action", 1);
         m.put("did", ms.did);
         sendBleTeleprompter(
-                encodeGlassesMsg(MSG_PAUSE, JsonMini.stringify(m), null, SEQ_GEN.getAndIncrement()),
+                encodeGlassesMsg(MSG_PAUSE, JsonMini.stringify(m), null, 0),
                 deviceId, true);
     }
 
@@ -910,7 +1297,7 @@ public final class LyricsTeleprompterBridge {
         m.put("action", 1);
         m.put("did", ms.did);
         sendBleTeleprompter(
-                encodeGlassesMsg(MSG_RESUME, JsonMini.stringify(m), null, SEQ_GEN.getAndIncrement()),
+                encodeGlassesMsg(MSG_RESUME, JsonMini.stringify(m), null, 0),
                 deviceId, true);
     }
 
@@ -919,14 +1306,14 @@ public final class LyricsTeleprompterBridge {
         if (deviceId.isEmpty() || ms == null) return;
         String json = buildStopRequestJson(ms.did, pageOff);
         sendBleTeleprompter(
-                encodeGlassesMsg(MSG_STOP, json, null, SEQ_GEN.getAndIncrement()),
+                encodeGlassesMsg(MSG_STOP, json, null, 0),
                 deviceId, true);
     }
 
     private static void stopSessionOnGlasses(String reason) {
         if (sessionState != SESSION_IDLE && activeManuscript != null) {
-            int idx = Math.max(0, lastSentLineIdx);
-            int pageOff = activeManuscript.lineByteOffsets[Math.max(0, Math.min(idx - 1, activeManuscript.lineByteOffsets.length - 1))];
+            int idx = Math.max(0, Math.min(lastSentLineIdx, activeManuscript.lineByteOffsets.length - 1));
+            int pageOff = activeManuscript.lineByteOffsets[idx];
             sendStopPacket(activeManuscript, pageOff);
             Log.i(TAG, "Stopped lyrics teleprompter session (" + reason + ")");
         }
@@ -935,9 +1322,15 @@ public final class LyricsTeleprompterBridge {
     }
 
     private static void resetSessionVars() {
+        attemptSeq++;
         sessionState = SESSION_IDLE;
         lastSentLineIdx = -1;
         handshakeAttempts = 0;
+        fileShareDoneForAttempt = false;
+        readyCode7ReceivedForAttempt = false;
+        cueingStartScheduled = false;
+        cueingStartRetriedOnce = false;
+        cueingReadyAtUptimeMs = 0L;
         conflictRetried = false;
         pendingFileTaskId = "";
     }
@@ -945,7 +1338,7 @@ public final class LyricsTeleprompterBridge {
     private static int computeCurrentPageOffset(LyricsManuscript ms, long posMs) {
         if (ms == null || ms.lineByteOffsets.length == 0) return 0;
         int idx = findActiveLineIndex(ms.lineTimesMs, posMs);
-        return ms.lineByteOffsets[Math.max(0, idx - 1)];
+        return ms.lineByteOffsets[idx];
     }
 
     // ==================== CoreConnect BLE Device & Sender ====================
@@ -959,39 +1352,47 @@ public final class LyricsTeleprompterBridge {
             }
         } catch (Throwable ignored) {}
         try {
-            return w.h;
-        } catch (Throwable ignored) {
-            return null;
-        }
+            if (w.h != null) return w.h;
+        } catch (Throwable ignored) {}
+        try {
+            if (w.g != null) return w.g.a();
+        } catch (Throwable ignored) {}
+        return null;
     }
 
     private static String resolveConnectedGlassesDeviceId() {
-        // 1. Check o4.z (h4 connected glasses record: z.c == connected, z.a == deviceId)
+        String zId = "";
+        boolean zFlag = false;
         try {
             o4 b = lastSeenBridge != null ? lastSeenBridge : o4.Q;
             if (b != null && b.z != null) {
                 h4 z = b.z;
-                if (z.c && z.a != null && !z.a.isEmpty()) {
-                    return z.a;
-                }
+                zId = safe(z.a);
+                zFlag = z.c;
             }
         } catch (Throwable ignored) {}
 
-        // 2. Iterate w.j() device map -> CRITICAL: read field g0.a (deviceId), NEVER g0.a() (displayName)!
-        String fallbackAnyId = "";
+        // Iterate CoreConnect w.j() device map: map key is canonical deviceId, dev.b() is live BLE/SPP auth state!
+        String wConnectedId = "";
+        boolean sawDeviceEntries = false;
+        StringBuilder mapDiag = new StringBuilder();
         try {
             Map devices = w.j();
             if (devices != null && !devices.isEmpty()) {
-                for (Object val : devices.values()) {
-                    if (val instanceof g0) {
-                        g0 dev = (g0) val;
-                        String devId = dev.a;
-                        if (devId != null && !devId.isEmpty()) {
-                            if (dev.b()) {
-                                return devId;
-                            }
-                            if (fallbackAnyId.isEmpty()) {
-                                fallbackAnyId = devId;
+                for (Object entryObj : devices.entrySet()) {
+                    if (entryObj instanceof Map.Entry) {
+                        Map.Entry en = (Map.Entry) entryObj;
+                        Object val = en.getValue();
+                        if (val instanceof g0) {
+                            sawDeviceEntries = true;
+                            g0 dev = (g0) val;
+                            String keyId = (en.getKey() instanceof String) ? safe((String) en.getKey()) : "";
+                            String fieldId = safe(dev.a);
+                            String devId = !fieldId.isEmpty() ? fieldId : keyId;
+                            boolean conn = dev.b();
+                            mapDiag.append(devId).append("(").append(conn).append(");");
+                            if (conn && !devId.isEmpty() && wConnectedId.isEmpty()) {
+                                wConnectedId = devId;
                             }
                         }
                     }
@@ -999,18 +1400,31 @@ public final class LyricsTeleprompterBridge {
             }
         } catch (Throwable ignored) {}
 
-        if (!fallbackAnyId.isEmpty()) {
-            return fallbackAnyId;
+        String chosen = "";
+        if (!wConnectedId.isEmpty()) {
+            chosen = wConnectedId;
+        } else if (!sawDeviceEntries) {
+            // CoreConnect map not initialized yet -> fall back to activeDeviceId (o4.z.a) or lastSeenDeviceId
+            chosen = !zId.isEmpty() ? zId : safe(lastSeenDeviceId);
         }
-        return safe(lastSeenDeviceId);
+
+        String diag = "chosen=" + chosen + " | z=" + zId + "(" + zFlag + ") | wMap={" + mapDiag + "}";
+        if (!diag.equals(lastLoggedDevDiag)) {
+            lastLoggedDevDiag = diag;
+            Log.i(TAG, "[DEV-DIAG] " + diag);
+        }
+        return chosen;
     }
 
-    private static boolean sendBleTeleprompter(byte[] payload, String deviceId, boolean needAck) {
+    private static boolean sendBleTeleprompter(final byte[] payload, final String deviceId, final boolean needAck) {
         if (payload == null || deviceId == null || deviceId.isEmpty()) return false;
         try {
             w wInst = resolveCoreConnectW();
-            if (wInst == null) return false;
-            String msgId = "lyr_" + MSG_ID_GEN.incrementAndGet();
+            if (wInst == null) {
+                Log.w(TAG, "sendBleTeleprompter: wInst is NULL (lastSeenBridge=" + lastSeenBridge + ")");
+                return false;
+            }
+            final String msgId = "lyr_" + MSG_ID_GEN.incrementAndGet();
             v0 msg = new v0(
                     payload,
                     msgId,
@@ -1023,7 +1437,17 @@ public final class LyricsTeleprompterBridge {
                     null,
                     null
             );
-            wInst.t(msg);
+            wInst.u(msg, new Function2() {
+                @Override
+                public Object invoke(Object v0Obj, Object errObj) {
+                    if (errObj != null) {
+                        Log.w(TAG, "[BLE-CB-ERR] msgId=" + msgId + " dev=" + deviceId + " len=" + payload.length + " err=" + errObj);
+                    } else if (needAck) {
+                        Log.i(TAG, "[BLE-CB-OK] msgId=" + msgId + " dev=" + deviceId + " len=" + payload.length);
+                    }
+                    return null;
+                }
+            });
             return true;
         } catch (Throwable t) {
             Log.w(TAG, "sendBleTeleprompter error", t);
@@ -1034,7 +1458,7 @@ public final class LyricsTeleprompterBridge {
     // ==================== Teleprompter Wire JSON Builders ====================
 
     private static void putDisplaySettings(Map<String, Object> m) {
-        m.put("countdown", 0);
+        m.put("countdown", HUD_COUNTDOWN);
         m.put("scroll", HUD_SCROLL_MANUAL);
         m.put("speed", HUD_SPEED);
         m.put("gear", HUD_GEAR_LOW);
@@ -1042,6 +1466,83 @@ public final class LyricsTeleprompterBridge {
         m.put("size", HUD_FONT_SIZE);
         m.put("width", HUD_WIDTH);
         m.put("leading", HUD_LEADING);
+    }
+
+    /**
+     * Builds 0x01 ListUpdate (action=2, type=3 upsert) matching official RayNeo iO wire format so the
+     * active song's lyrics appear cleanly inside the glasses' Teleprompter menu without wiping user notes.
+     */
+    public static String buildListUpsertJson(LyricsManuscript ms, int offset) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("action", 2);
+        m.put("type", 3);
+        m.put("total", 1);
+
+        Map<String, Object> chunkInfo = new LinkedHashMap<>();
+        chunkInfo.put("chunkid", 1);
+        chunkInfo.put("total_items", 1);
+        chunkInfo.put("islast", true);
+        m.put("chunkinfo", chunkInfo);
+
+        String cleanTitle = sanitizeBmpText(ms.title);
+        String cleanArtist = sanitizeBmpText(ms.artist);
+        String itemTitle = cleanArtist.isEmpty()
+                ? ("[歌词] " + cleanTitle)
+                : ("[歌词] " + cleanTitle + " - " + cleanArtist);
+        if (itemTitle.length() > 40) {
+            itemTitle = itemTitle.substring(0, 40);
+        }
+
+        String fullText = sanitizeBmpText(new String(ms.utf8Bytes, StandardCharsets.UTF_8));
+        String preview = fullText.length() > 100 ? fullText.substring(0, 100) : fullText;
+
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("did", ms.did);
+        item.put("pin", false);
+        item.put("title", itemTitle);
+        item.put("offset", Math.max(0, offset));
+        item.put("scroll", HUD_SCROLL_MANUAL);
+        item.put("total", ms.utf8Bytes.length);
+        item.put("timestamp", System.currentTimeMillis() / 1000L);
+        item.put("preview", preview);
+        item.put("timezone", 28800);
+
+        List<Object> items = new ArrayList<>(1);
+        items.add(item);
+        m.put("items", items);
+        return JsonMini.stringify(m);
+    }
+
+    /**
+     * Builds 0x02 AppStartRequest (file-transfer handshake) matching official RayNeo iO wire format.
+     */
+    public static String buildAppStartRequestJson(LyricsManuscript ms, int pageOffset, int highLightOffset) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("action", 1);
+        m.put("total", ms.utf8Bytes.length);
+        putDisplaySettings(m);
+        m.put("did", ms.did);
+        m.put("pageOffset", pageOffset);
+        m.put("highLightOffset", highLightOffset);
+        m.put("checksum", ms.checksum);
+        return JsonMini.stringify(m);
+    }
+
+    /**
+     * Builds 0x02 GlassesStartAccept (action=2, code=1) when the user opens the lyrics slot directly
+     * from the glasses' Teleprompter menu, immediately followed by fileShare transfer.
+     */
+    public static String buildGlassesStartAcceptJson(LyricsManuscript ms, int pageOffset, int highLightOffset) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("action", 2);
+        m.put("did", ms.did);
+        m.put("total", ms.utf8Bytes.length);
+        m.put("checksum", ms.checksum);
+        putDisplaySettings(m);
+        m.put("pageOffset", pageOffset);
+        m.put("highLightOffset", highLightOffset);
+        m.put("code", 1);
+        return JsonMini.stringify(m);
     }
 
     public static String buildAppStartSnippetRequestJson(LyricsManuscript ms, int pageOffset, int highLightOffset) {
@@ -1112,10 +1613,12 @@ public final class LyricsTeleprompterBridge {
         m.put("did", did);
         m.put("pageOffset", pageOffset);
         m.put("highLightOffset", highLightOffset);
+        m.put("autoSync", false);
         if (snippetMode) {
             m.put("snippetMode", true);
             Map<String, Object> sInfo = new LinkedHashMap<>();
             sInfo.put("index", 0);
+            sInfo.put("inSnippetOffset", pageOffset);
             sInfo.put("inlineOffset", pageOffset);
             m.put("snippetInfo", sInfo);
         }
@@ -1149,13 +1652,14 @@ public final class LyricsTeleprompterBridge {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("action", 2);
         m.put("did", ms.did);
-        m.put("code", 1);
+        m.put("version", "1.0");
         m.put("state", stateVal);
-        m.put("total", ms.utf8Bytes.length);
-        putDisplaySettings(m);
+        m.put("code", 0);
         m.put("pageOffset", pageOffset);
         m.put("highLightOffset", highLightOffset);
+        m.put("elapsedSeconds", 0);
         m.put("checksum", ms.checksum);
+        putDisplaySettings(m);
         return JsonMini.stringify(m);
     }
 
@@ -1282,6 +1786,42 @@ public final class LyricsTeleprompterBridge {
 
     // ==================== LRC Fetching (NetEase + QQ Music + LRU Cache) ====================
 
+    private static final class LyricsSearchCandidate {
+        final String id;
+        final String name;
+        final List<String> transNames;
+        final List<String> aliases;
+        final List<String> artistTokens;
+        final String artistDisplay;
+        final String album;
+        final long durationMs;
+        final int popularity;
+        int score;
+        boolean exactCoreAndTrans;
+
+        LyricsSearchCandidate(
+                String id,
+                String name,
+                List<String> transNames,
+                List<String> aliases,
+                List<String> artistTokens,
+                String artistDisplay,
+                String album,
+                long durationMs,
+                int popularity
+        ) {
+            this.id = safe(id);
+            this.name = safe(name);
+            this.transNames = transNames != null ? transNames : Collections.<String>emptyList();
+            this.aliases = aliases != null ? aliases : Collections.<String>emptyList();
+            this.artistTokens = artistTokens != null ? artistTokens : Collections.<String>emptyList();
+            this.artistDisplay = safe(artistDisplay);
+            this.album = safe(album);
+            this.durationMs = durationMs;
+            this.popularity = popularity;
+        }
+    }
+
     private static LyricsManuscript getOrFetchManuscript(SystemMediaBridge.TrackInfo track) {
         String key = normalizeTrackKey(track.title, track.artist);
         synchronized (CACHE_LOCK) {
@@ -1292,7 +1832,7 @@ public final class LyricsTeleprompterBridge {
         }
 
         LyricsManuscript fetched = fetchLyricsManuscriptOnline(
-                track.title, track.artist, track.packageName, null, null);
+                track.title, track.artist, track.durationMs, track.packageName, null, null);
         if (fetched.hasSyncedLyrics) {
             synchronized (CACHE_LOCK) {
                 MANUSCRIPT_CACHE.put(key, fetched);
@@ -1302,12 +1842,27 @@ public final class LyricsTeleprompterBridge {
     }
 
     /**
+     * 5-arg overload preserved for unit test compatibility (delegates with durationMs = 0L).
+     */
+    public static LyricsManuscript fetchLyricsManuscriptOnline(
+            String rawTitle,
+            String rawArtist,
+            String playerPkg,
+            String netEaseBaseOverride,
+            String qqBaseOverride
+    ) {
+        return fetchLyricsManuscriptOnline(
+                rawTitle, rawArtist, 0L, playerPkg, netEaseBaseOverride, qqBaseOverride);
+    }
+
+    /**
      * Fetches LRC from NetEase Cloud Music and/or QQ Music, parses timestamps, pre-wraps lines,
      * and returns a ready-to-stream LyricsManuscript (never null; falls back to static song card).
      */
     public static LyricsManuscript fetchLyricsManuscriptOnline(
             String rawTitle,
             String rawArtist,
+            long durationMs,
             String playerPkg,
             String netEaseBaseOverride,
             String qqBaseOverride
@@ -1319,7 +1874,8 @@ public final class LyricsTeleprompterBridge {
         SystemMediaBridge.SongHint hint = SystemMediaBridge.getLastResolvedSongHint();
         String hintedNeId = "";
         String hintedQqMid = "";
-        if (hint != null && titlesRoughlyMatch(title, hint.title)) {
+        if (hint != null && titlesRoughlyMatch(title, hint.title)
+                && (artist.isEmpty() || safe(hint.artist).isEmpty() || artistsRoughlyOverlap(artist, hint.artist))) {
             if (SystemMediaBridge.PKG_NETEASE.equals(hint.platform)) {
                 hintedNeId = safe(hint.songId);
             } else if (SystemMediaBridge.PKG_QQMUSIC.equals(hint.platform)) {
@@ -1328,20 +1884,20 @@ public final class LyricsTeleprompterBridge {
         }
 
         if (preferQq) {
-            String qqLrc = fetchQqLrc(title, artist, hintedQqMid, qqBaseOverride);
+            String qqLrc = fetchQqLrc(title, artist, durationMs, hintedQqMid, qqBaseOverride);
             LyricsManuscript qqMs = parseLrcAndBuildManuscript(title, artist, qqLrc, "QQ音乐");
             if (qqMs.hasSyncedLyrics) return qqMs;
 
-            String neLrc = fetchNetEaseLrc(title, artist, hintedNeId, netEaseBaseOverride);
+            String neLrc = fetchNetEaseLrc(title, artist, durationMs, hintedNeId, netEaseBaseOverride);
             LyricsManuscript neMs = parseLrcAndBuildManuscript(title, artist, neLrc, "网易云音乐");
             if (neMs.hasSyncedLyrics) return neMs;
             return qqMs;
         } else {
-            String neLrc = fetchNetEaseLrc(title, artist, hintedNeId, netEaseBaseOverride);
+            String neLrc = fetchNetEaseLrc(title, artist, durationMs, hintedNeId, netEaseBaseOverride);
             LyricsManuscript neMs = parseLrcAndBuildManuscript(title, artist, neLrc, "网易云音乐");
             if (neMs.hasSyncedLyrics) return neMs;
 
-            String qqLrc = fetchQqLrc(title, artist, hintedQqMid, qqBaseOverride);
+            String qqLrc = fetchQqLrc(title, artist, durationMs, hintedQqMid, qqBaseOverride);
             LyricsManuscript qqMs = parseLrcAndBuildManuscript(title, artist, qqLrc, "QQ音乐");
             if (qqMs.hasSyncedLyrics) return qqMs;
             return neMs;
@@ -1350,103 +1906,635 @@ public final class LyricsTeleprompterBridge {
 
     public static String fetchNetEaseLrc(
             String title, String artist, String knownSongId, String baseUrlOverride) {
+        return fetchNetEaseLrc(title, artist, 0L, knownSongId, baseUrlOverride);
+    }
+
+    public static String fetchNetEaseLrc(
+            String title, String artist, long durationMs, String knownSongId, String baseUrlOverride) {
         String base = (baseUrlOverride != null && !baseUrlOverride.isEmpty())
                 ? stripTrailingSlash(baseUrlOverride)
                 : "https://music.163.com";
         try {
-            String songId = safe(knownSongId);
-            if (songId.isEmpty()) {
-                String rawKeyword = artist.isEmpty() ? title : (artist + " " + title);
-                SystemMediaBridge.PlaySearchRequest req = new SystemMediaBridge.PlaySearchRequest(
-                        SystemMediaBridge.PlaySearchRequest.MODE_SONG_SEARCH,
-                        SystemMediaBridge.PKG_NETEASE,
-                        rawKeyword,
-                        artist,
-                        title,
-                        false,
-                        !artist.isEmpty()
-                );
-                SystemMediaBridge.SongCandidate cand =
-                        SystemMediaBridge.searchNetEaseSong(req, "", baseUrlOverride);
-                if (cand == null || !titlesRoughlyMatch(title, cand.title)) {
-                    return "";
-                }
-                songId = cand.id;
+            List<String> candidateIds = new ArrayList<>();
+            String explicitId = safe(knownSongId);
+            if (!explicitId.isEmpty()) {
+                candidateIds.add(explicitId);
+            } else {
+                candidateIds.addAll(resolveNetEaseSongIdsForLyrics(title, artist, durationMs, baseUrlOverride));
             }
-            if (songId.isEmpty()) return "";
+            if (candidateIds.isEmpty()) return "";
 
-            String url = base + "/api/song/lyric?id=" + urlEncode(songId) + "&lv=1&kv=1&tv=-1";
             Map<String, String> headers = new HashMap<>();
             headers.put("Referer", "https://music.163.com/");
-            String body = httpGet(url, headers);
-            if (body.isEmpty()) return "";
 
-            Map<String, Object> root = JsonMini.parseObject(body);
-            if (Boolean.TRUE.equals(root.get("nolyric")) || Boolean.TRUE.equals(root.get("uncollected"))) {
-                return "";
+            int tries = Math.min(3, candidateIds.size());
+            for (int i = 0; i < tries; i++) {
+                String songId = candidateIds.get(i);
+                if (songId.isEmpty()) continue;
+                String url = base + "/api/song/lyric?id=" + urlEncode(songId) + "&lv=1&kv=1&tv=-1";
+                String body = httpGet(url, headers);
+                if (body.isEmpty()) continue;
+
+                Map<String, Object> root = JsonMini.parseObject(body);
+                if (Boolean.TRUE.equals(root.get("nolyric")) || Boolean.TRUE.equals(root.get("uncollected"))) {
+                    continue;
+                }
+                Map<String, Object> lrcObj = JsonMini.getMap(root, "lrc");
+                String lyric = safe(JsonMini.getString(lrcObj, "lyric"));
+                if (!lyric.isEmpty() && lyric.contains("[")) {
+                    safeLogI("Resolved NetEase LRC songId=" + songId + " for " + title + " - " + artist);
+                    return lyric;
+                }
+
+                Map<String, Object> klyricObj = JsonMini.getMap(root, "klyric");
+                String klyric = safe(JsonMini.getString(klyricObj, "lyric"));
+                if (!klyric.isEmpty() && klyric.contains("[")) {
+                    safeLogI("Resolved NetEase klyric songId=" + songId + " for " + title + " - " + artist);
+                    return klyric;
+                }
             }
-            Map<String, Object> lrcObj = JsonMini.getMap(root, "lrc");
-            String lyric = safe(JsonMini.getString(lrcObj, "lyric"));
-            if (!lyric.isEmpty()) return lyric;
-
-            Map<String, Object> klyricObj = JsonMini.getMap(root, "klyric");
-            return safe(JsonMini.getString(klyricObj, "lyric"));
+            return "";
         } catch (Throwable t) {
-            Log.w(TAG, "fetchNetEaseLrc error: " + t.getMessage());
+            safeLogW("fetchNetEaseLrc error: " + t.getMessage());
             return "";
         }
     }
 
     public static String fetchQqLrc(
             String title, String artist, String knownSongMid, String baseUrlOverride) {
+        return fetchQqLrc(title, artist, 0L, knownSongMid, baseUrlOverride);
+    }
+
+    public static String fetchQqLrc(
+            String title, String artist, long durationMs, String knownSongMid, String baseUrlOverride) {
         String base = (baseUrlOverride != null && !baseUrlOverride.isEmpty())
                 ? stripTrailingSlash(baseUrlOverride)
                 : "https://c.y.qq.com";
         try {
-            String mid = safe(knownSongMid);
-            if (mid.isEmpty()) {
-                String rawKeyword = artist.isEmpty() ? title : (artist + " " + title);
-                SystemMediaBridge.PlaySearchRequest req = new SystemMediaBridge.PlaySearchRequest(
-                        SystemMediaBridge.PlaySearchRequest.MODE_SONG_SEARCH,
-                        SystemMediaBridge.PKG_QQMUSIC,
-                        rawKeyword,
-                        artist,
-                        title,
-                        false,
-                        !artist.isEmpty()
-                );
-                SystemMediaBridge.SongCandidate cand =
-                        SystemMediaBridge.searchQqMusicSong(req, "", baseUrlOverride);
-                if (cand == null || !titlesRoughlyMatch(title, cand.title)) {
-                    return "";
-                }
-                mid = cand.id;
+            List<String> candidateMids = new ArrayList<>();
+            String explicitMid = safe(knownSongMid);
+            if (!explicitMid.isEmpty()) {
+                candidateMids.add(explicitMid);
+            } else {
+                candidateMids.addAll(resolveQqSongMidsForLyrics(title, artist, durationMs, baseUrlOverride));
             }
-            if (mid.isEmpty()) return "";
+            if (candidateMids.isEmpty()) return "";
 
-            String url = base + "/lyric/fcgi-bin/fcg_query_lyric_new.fcg?songmid="
-                    + urlEncode(mid) + "&format=json&nobase64=1";
             Map<String, String> headers = new HashMap<>();
             headers.put("Referer", "https://y.qq.com/");
-            String body = stripJsonpWrapper(httpGet(url, headers));
-            if (body.isEmpty()) return "";
 
-            Map<String, Object> root = JsonMini.parseObject(body);
-            String lyric = safe(JsonMini.getString(root, "lyric"));
-            if (lyric.isEmpty()) return "";
+            int tries = Math.min(3, candidateMids.size());
+            for (int i = 0; i < tries; i++) {
+                String mid = candidateMids.get(i);
+                if (mid.isEmpty()) continue;
+                String url = base + "/lyric/fcgi-bin/fcg_query_lyric_new.fcg?songmid="
+                        + urlEncode(mid) + "&format=json&nobase64=1";
+                String body = stripJsonpWrapper(httpGet(url, headers));
+                if (body.isEmpty()) continue;
 
-            // Handle Base64 payload if nobase64=1 was ignored by an upstream mirror
-            if (!lyric.contains("[") && !lyric.contains("&#")) {
-                try {
-                    byte[] decoded = Base64.getDecoder().decode(lyric.replaceAll("\\s+", ""));
-                    lyric = new String(decoded, StandardCharsets.UTF_8);
-                } catch (Throwable ignored) {}
+                Map<String, Object> root = JsonMini.parseObject(body);
+                String lyric = safe(JsonMini.getString(root, "lyric"));
+                if (lyric.isEmpty()) continue;
+
+                // Handle Base64 payload if nobase64=1 was ignored by an upstream mirror
+                if (!lyric.contains("[") && !lyric.contains("&#")) {
+                    try {
+                        byte[] decoded = Base64.getDecoder().decode(lyric.replaceAll("\\s+", ""));
+                        lyric = new String(decoded, StandardCharsets.UTF_8);
+                    } catch (Throwable ignored) {}
+                }
+                String decodedLyric = decodeHtmlEntities(lyric);
+                if (decodedLyric.contains("[")) {
+                    safeLogI("Resolved QQ LRC mid=" + mid + " for " + title + " - " + artist);
+                    return decodedLyric;
+                }
             }
-            return decodeHtmlEntities(lyric);
+            return "";
         } catch (Throwable t) {
-            Log.w(TAG, "fetchQqLrc error: " + t.getMessage());
+            safeLogW("fetchQqLrc error: " + t.getMessage());
             return "";
         }
+    }
+
+    /**
+     * Resolves the best NetEase song ID for lyrics (includes VIP / copyright-restricted studio tracks
+     * with privilege.st < 0 because NetEase's /api/song/lyric endpoint serves their LRC freely!).
+     */
+    public static String resolveNetEaseSongIdForLyrics(
+            String title, String artist, long durationMs, String baseUrlOverride) {
+        List<String> ids = resolveNetEaseSongIdsForLyrics(title, artist, durationMs, baseUrlOverride);
+        return ids.isEmpty() ? "" : ids.get(0);
+    }
+
+    public static List<String> resolveNetEaseSongIdsForLyrics(
+            String title, String artist, long durationMs, String baseUrlOverride) {
+        String base = (baseUrlOverride != null && !baseUrlOverride.isEmpty())
+                ? stripTrailingSlash(baseUrlOverride)
+                : "https://music.163.com";
+
+        List<String> queries = buildLyricsSearchQueries(title, artist);
+        LinkedHashMap<String, LyricsSearchCandidate> merged = new LinkedHashMap<>();
+
+        for (int qi = 0; qi < queries.size(); qi++) {
+            String q = queries.get(qi);
+            List<LyricsSearchCandidate> batch = queryNetEaseLyricsCandidates(base, q);
+            scoreAndMergeCandidates(batch, title, artist, durationMs, merged);
+            // Stop early if we already found an unmistakable studio match (exact title + artist)
+            int topScore = getHighestCandidateScore(merged);
+            if (topScore >= 420) {
+                break;
+            }
+        }
+        return filterAndRankAcceptedIds(merged, title, artist, durationMs);
+    }
+
+    public static String resolveQqSongMidForLyrics(
+            String title, String artist, long durationMs, String baseUrlOverride) {
+        List<String> mids = resolveQqSongMidsForLyrics(title, artist, durationMs, baseUrlOverride);
+        return mids.isEmpty() ? "" : mids.get(0);
+    }
+
+    public static List<String> resolveQqSongMidsForLyrics(
+            String title, String artist, long durationMs, String baseUrlOverride) {
+        String base = (baseUrlOverride != null && !baseUrlOverride.isEmpty())
+                ? stripTrailingSlash(baseUrlOverride)
+                : "https://c.y.qq.com";
+
+        List<String> queries = buildLyricsSearchQueries(title, artist);
+        LinkedHashMap<String, LyricsSearchCandidate> merged = new LinkedHashMap<>();
+
+        for (String q : queries) {
+            List<LyricsSearchCandidate> batch = queryQqSmartboxLyricsCandidates(base, q);
+            scoreAndMergeCandidates(batch, title, artist, durationMs, merged);
+            if (getHighestCandidateScore(merged) >= 420) {
+                break;
+            }
+        }
+        if (baseUrlOverride == null && getHighestCandidateScore(merged) < 350 && !queries.isEmpty()) {
+            List<LyricsSearchCandidate> desktop = queryQqDesktopLyricsCandidates(queries.get(0));
+            scoreAndMergeCandidates(desktop, title, artist, durationMs, merged);
+        }
+        return filterAndRankAcceptedIds(merged, title, artist, durationMs);
+    }
+
+    private static List<String> buildLyricsSearchQueries(String rawTitle, String rawArtist) {
+        String title = safe(rawTitle);
+        String artist = safe(rawArtist);
+        String coreTitle = stripBracketSuffix(title);
+        String primaryArtist = extractPrimaryArtist(artist);
+
+        LinkedHashSet<String> set = new LinkedHashSet<>();
+        String baseTitle = !coreTitle.isEmpty() ? coreTitle : title;
+        if (!baseTitle.isEmpty() && !primaryArtist.isEmpty()) {
+            set.add(baseTitle + " " + primaryArtist);
+        }
+        if (!title.isEmpty() && !title.equals(baseTitle) && !primaryArtist.isEmpty()) {
+            set.add(title + " " + primaryArtist);
+        } else if (!baseTitle.isEmpty() && !artist.isEmpty() && !artist.equals(primaryArtist)) {
+            set.add(baseTitle + " " + artist.replace('/', ' '));
+        }
+        if (!baseTitle.isEmpty() && set.isEmpty()) {
+            set.add(baseTitle);
+        }
+        return new ArrayList<>(set);
+    }
+
+    private static List<LyricsSearchCandidate> queryNetEaseLyricsCandidates(String base, String keyword) {
+        List<LyricsSearchCandidate> out = new ArrayList<>();
+        String encoded = urlEncode(keyword);
+        String[] urls = new String[] {
+                base + "/api/cloudsearch/pc?s=" + encoded + "&type=1&offset=0&limit=20",
+                base + "/api/search/get/web?s=" + encoded + "&type=1&offset=0&total=true&limit=20"
+        };
+        Map<String, String> headers = new HashMap<>();
+        headers.put("Referer", "https://music.163.com/");
+
+        for (String url : urls) {
+            try {
+                String body = httpGet(url, headers);
+                if (body.isEmpty()) continue;
+                Map<String, Object> root = JsonMini.parseObject(body);
+                Map<String, Object> result = JsonMini.getMap(root, "result");
+                List<Object> songs = JsonMini.getList(result, "songs");
+                if (songs == null || songs.isEmpty()) continue;
+
+                for (Object item : songs) {
+                    Map<String, Object> sm = JsonMini.asMap(item);
+                    if (sm == null) continue;
+                    // IMPORTANT: Do NOT filter out privilege.st < 0 or status < 0!
+                    // VIP / copyright-grayed original tracks still return full synced LRC on /api/song/lyric!
+                    String id = "";
+                    Object idObj = sm.get("id");
+                    if (idObj instanceof Number) {
+                        id = String.valueOf(((Number) idObj).longValue());
+                    } else if (idObj instanceof String) {
+                        id = safe((String) idObj);
+                    }
+                    String name = safe(JsonMini.getString(sm, "name"));
+                    if (id.isEmpty() || name.isEmpty()) continue;
+
+                    List<String> transNames = new ArrayList<>();
+                    collectStringList(JsonMini.getList(sm, "tns"), transNames);
+                    collectStringList(JsonMini.getList(sm, "transNames"), transNames);
+
+                    List<String> aliases = new ArrayList<>();
+                    collectStringList(JsonMini.getList(sm, "alia"), aliases);
+                    collectStringList(JsonMini.getList(sm, "alias"), aliases);
+
+                    List<String> artistTokens = new ArrayList<>();
+                    StringBuilder artistDisp = new StringBuilder();
+                    List<Object> arList = JsonMini.getList(sm, "ar");
+                    if (arList == null) arList = JsonMini.getList(sm, "artists");
+                    if (arList != null) {
+                        for (Object ao : arList) {
+                            Map<String, Object> am = JsonMini.asMap(ao);
+                            if (am == null) continue;
+                            String an = safe(JsonMini.getString(am, "name"));
+                            if (!an.isEmpty()) {
+                                if (artistDisp.length() > 0) artistDisp.append('/');
+                                artistDisp.append(an);
+                                addNormalizedArtistTokens(an, artistTokens);
+                            }
+                            List<String> arTns = new ArrayList<>();
+                            collectStringList(JsonMini.getList(am, "tns"), arTns);
+                            collectStringList(JsonMini.getList(am, "alias"), arTns);
+                            collectStringList(JsonMini.getList(am, "alia"), arTns);
+                            for (String at : arTns) {
+                                addNormalizedArtistTokens(at, artistTokens);
+                            }
+                        }
+                    }
+
+                    Map<String, Object> alMap = JsonMini.getMap(sm, "al");
+                    if (alMap == null) alMap = JsonMini.getMap(sm, "album");
+                    String album = safe(JsonMini.getString(alMap, "name"));
+
+                    long dt = 0L;
+                    if (sm.get("dt") instanceof Number) {
+                        dt = ((Number) sm.get("dt")).longValue();
+                    } else if (sm.get("duration") instanceof Number) {
+                        dt = ((Number) sm.get("duration")).longValue();
+                    }
+                    int pop = (sm.get("pop") instanceof Number) ? ((Number) sm.get("pop")).intValue() : 0;
+
+                    out.add(new LyricsSearchCandidate(
+                            id, name, transNames, aliases, artistTokens, artistDisp.toString(), album, dt, pop));
+                }
+                if (!out.isEmpty()) {
+                    return out;
+                }
+            } catch (Throwable t) {
+                safeLogW("queryNetEaseLyricsCandidates error: " + t.getMessage());
+            }
+        }
+        return out;
+    }
+
+    private static List<LyricsSearchCandidate> queryQqSmartboxLyricsCandidates(String base, String keyword) {
+        List<LyricsSearchCandidate> out = new ArrayList<>();
+        try {
+            String url = base + "/splcloud/fcgi-bin/smartbox_new.fcg?is_xml=0&format=json&key="
+                    + urlEncode(keyword);
+            Map<String, String> headers = new HashMap<>();
+            headers.put("Referer", "https://y.qq.com/");
+            String body = httpGet(url, headers);
+            if (body.isEmpty()) return out;
+
+            Map<String, Object> root = JsonMini.parseObject(body);
+            Map<String, Object> data = JsonMini.getMap(root, "data");
+            Map<String, Object> songBox = JsonMini.getMap(data, "song");
+            List<Object> items = JsonMini.getList(songBox, "itemlist");
+            if (items == null) return out;
+
+            for (Object o : items) {
+                Map<String, Object> sm = JsonMini.asMap(o);
+                if (sm == null) continue;
+                String mid = safe(JsonMini.getString(sm, "mid"));
+                String name = safe(JsonMini.getString(sm, "name"));
+                String singer = safe(JsonMini.getString(sm, "singer"));
+                if (mid.isEmpty() || name.isEmpty()) continue;
+                List<String> artistTokens = new ArrayList<>();
+                addNormalizedArtistTokens(singer, artistTokens);
+                out.add(new LyricsSearchCandidate(
+                        mid, name, Collections.<String>emptyList(), Collections.<String>emptyList(),
+                        artistTokens, singer, "", 0L, 0));
+            }
+        } catch (Throwable t) {
+            safeLogW("queryQqSmartboxLyricsCandidates error: " + t.getMessage());
+        }
+        return out;
+    }
+
+    private static List<LyricsSearchCandidate> queryQqDesktopLyricsCandidates(String keyword) {
+        List<LyricsSearchCandidate> out = new ArrayList<>();
+        try {
+            String escaped = keyword.replace("\\", "\\\\").replace("\"", "\\\"");
+            String payload = "{\"req\":{\"module\":\"music.search.SearchCgiService\","
+                    + "\"method\":\"DoSearchForQQMusicDesktop\","
+                    + "\"param\":{\"query\":\"" + escaped
+                    + "\",\"num_per_page\":15,\"page_num\":1,\"search_type\":0}}}";
+            Map<String, String> headers = new HashMap<>();
+            headers.put("Content-Type", "application/json; charset=UTF-8");
+            headers.put("Referer", "https://y.qq.com/");
+            String body = httpPost("https://u.y.qq.com/cgi-bin/musicu.fcg", payload, headers);
+            if (body.isEmpty()) return out;
+
+            Map<String, Object> root = JsonMini.parseObject(body);
+            Map<String, Object> reqMap = JsonMini.getMap(root, "req");
+            Map<String, Object> data = JsonMini.getMap(reqMap, "data");
+            Map<String, Object> bodyMap = JsonMini.getMap(data, "body");
+            Map<String, Object> songMap = JsonMini.getMap(bodyMap, "song");
+            List<Object> list = JsonMini.getList(songMap, "list");
+            if (list == null) return out;
+
+            for (Object o : list) {
+                Map<String, Object> sm = JsonMini.asMap(o);
+                if (sm == null) continue;
+                String mid = safe(JsonMini.getString(sm, "mid"));
+                String name = safe(JsonMini.getString(sm, "name"));
+                if (mid.isEmpty() || name.isEmpty()) continue;
+
+                List<String> transNames = new ArrayList<>();
+                String subtitle = safe(JsonMini.getString(sm, "subtitle"));
+                if (!subtitle.isEmpty()) transNames.add(subtitle);
+
+                List<String> artistTokens = new ArrayList<>();
+                StringBuilder artistDisp = new StringBuilder();
+                List<Object> singers = JsonMini.getList(sm, "singer");
+                if (singers != null) {
+                    for (Object so : singers) {
+                        Map<String, Object> sMap = JsonMini.asMap(so);
+                        String sn = safe(JsonMini.getString(sMap, "name"));
+                        if (!sn.isEmpty()) {
+                            if (artistDisp.length() > 0) artistDisp.append('/');
+                            artistDisp.append(sn);
+                            addNormalizedArtistTokens(sn, artistTokens);
+                        }
+                    }
+                }
+                Map<String, Object> albumMap = JsonMini.getMap(sm, "album");
+                String album = safe(JsonMini.getString(albumMap, "name"));
+                long dt = (sm.get("interval") instanceof Number)
+                        ? (((Number) sm.get("interval")).longValue() * 1000L)
+                        : 0L;
+                out.add(new LyricsSearchCandidate(
+                        mid, name, transNames, Collections.<String>emptyList(),
+                        artistTokens, artistDisp.toString(), album, dt, 0));
+            }
+        } catch (Throwable t) {
+            safeLogW("queryQqDesktopLyricsCandidates error: " + t.getMessage());
+        }
+        return out;
+    }
+
+    private static void scoreAndMergeCandidates(
+            List<LyricsSearchCandidate> batch,
+            String expectedTitle,
+            String expectedArtist,
+            long expectedDurationMs,
+            LinkedHashMap<String, LyricsSearchCandidate> merged
+    ) {
+        if (batch == null) return;
+        for (int i = 0; i < batch.size(); i++) {
+            LyricsSearchCandidate c = batch.get(i);
+            c.score = scoreLyricsSongCandidate(c, expectedTitle, expectedArtist, expectedDurationMs, i);
+            LyricsSearchCandidate existing = merged.get(c.id);
+            if (existing == null || c.score > existing.score) {
+                merged.put(c.id, c);
+            }
+        }
+    }
+
+    private static int getHighestCandidateScore(Map<String, LyricsSearchCandidate> merged) {
+        int best = Integer.MIN_VALUE;
+        for (LyricsSearchCandidate c : merged.values()) {
+            if (c.score > best) best = c.score;
+        }
+        return best;
+    }
+
+    private static List<String> filterAndRankAcceptedIds(
+            Map<String, LyricsSearchCandidate> merged,
+            String expectedTitle,
+            String expectedArtist,
+            long expectedDurationMs
+    ) {
+        List<LyricsSearchCandidate> ranked = new ArrayList<>(merged.values());
+        Collections.sort(ranked, new Comparator<LyricsSearchCandidate>() {
+            @Override
+            public int compare(LyricsSearchCandidate a, LyricsSearchCandidate b) {
+                return Integer.compare(b.score, a.score);
+            }
+        });
+
+        boolean hasArtist = !safe(expectedArtist).isEmpty();
+        List<String> out = new ArrayList<>();
+        for (LyricsSearchCandidate c : ranked) {
+            boolean strongTransAndDuration = c.exactCoreAndTrans
+                    || (expectedDurationMs > 5000L && c.durationMs > 5000L
+                    && Math.abs(expectedDurationMs - c.durationMs) <= 2500L);
+            int minScore = hasArtist ? (strongTransAndDuration ? 110 : 180) : 140;
+            if (c.score >= minScore) {
+                out.add(c.id);
+            }
+        }
+        return out;
+    }
+
+    private static int scoreLyricsSongCandidate(
+            LyricsSearchCandidate c,
+            String expectedTitle,
+            String expectedArtist,
+            long expectedDurationMs,
+            int rankIndex
+    ) {
+        String expFull = normalizeCompareText(expectedTitle);
+        String expCore = normalizeCompareText(stripBracketSuffix(expectedTitle));
+        String expBracket = normalizeCompareText(extractFirstBracketText(expectedTitle));
+        if (expFull.isEmpty() && expCore.isEmpty()) return -9999;
+
+        String candName = normalizeCompareText(c.name);
+        String candCore = normalizeCompareText(stripBracketSuffix(c.name));
+        Set<String> candTransSet = new HashSet<>();
+        StringBuilder transJoinedSb = new StringBuilder();
+        for (String tn : c.transNames) {
+            String ntn = normalizeCompareText(tn);
+            if (!ntn.isEmpty()) candTransSet.add(ntn);
+            if (transJoinedSb.length() > 0) transJoinedSb.append(' ');
+            transJoinedSb.append(tn);
+        }
+        String candWithFirstTrans = c.transNames.isEmpty()
+                ? candName
+                : normalizeCompareText(c.name + " " + c.transNames.get(0));
+
+        int score = 0;
+        c.exactCoreAndTrans = false;
+
+        // 1. Title & translated-title match (mandatory)
+        if (!expCore.isEmpty() && candCore.equals(expCore)
+                && !expBracket.isEmpty() && candTransSet.contains(expBracket)) {
+            score += 275;
+            c.exactCoreAndTrans = true;
+        } else if (!expFull.isEmpty() && (candName.equals(expFull) || candWithFirstTrans.equals(expFull))) {
+            score += 260;
+        } else if (!expCore.isEmpty() && (candName.equals(expCore) || candCore.equals(expCore))) {
+            score += 235;
+        } else if ((!expFull.isEmpty() && candTransSet.contains(expFull))
+                || (!expCore.isEmpty() && candTransSet.contains(expCore))) {
+            score += 205;
+        } else {
+            String baseExp = !expCore.isEmpty() ? expCore : expFull;
+            String baseCand = !candCore.isEmpty() ? candCore : candName;
+            int minLen = Math.min(baseExp.length(), baseCand.length());
+            if (minLen >= 2 && (baseCand.contains(baseExp) || baseExp.contains(baseCand))) {
+                score += 110;
+            } else {
+                return -9999;
+            }
+        }
+
+        // 2. Artist token match (handles single artist, multi-artist '/' '&' '、', and translated aliases)
+        List<String> expArtistTokens = new ArrayList<>();
+        addNormalizedArtistTokens(expectedArtist, expArtistTokens);
+        if (!expArtistTokens.isEmpty()) {
+            int matched = 0;
+            for (String et : expArtistTokens) {
+                if (matchesAnyArtistToken(et, c.artistTokens)) {
+                    matched++;
+                }
+            }
+            if (matched == expArtistTokens.size()) {
+                score += 260;
+            } else if (matched > 0) {
+                score += 205;
+            } else {
+                score -= 220;
+            }
+        }
+
+        // 3. Penalize unrequested covers, English/Chinese re-writes, karaoke/instrumentals, DJ/remixes, live
+        StringBuilder aliasSb = new StringBuilder();
+        for (String al : c.aliases) {
+            if (aliasSb.length() > 0) aliasSb.append(' ');
+            aliasSb.append(al);
+        }
+        String candMetaLow = (c.name + " " + transJoinedSb + " " + aliasSb + " " + c.album)
+                .toLowerCase(Locale.ROOT);
+        String expMetaLow = (safe(expectedTitle) + " " + safe(expectedArtist)).toLowerCase(Locale.ROOT);
+
+        if (!containsAnyKeyword(expMetaLow, "伴奏", "instrumental", "karaoke", "卡拉ok", "off vocal", "纯音乐")) {
+            if (containsAnyKeyword(candMetaLow, "伴奏", "instrumental", "karaoke", "卡拉ok", "off vocal", "消音")) {
+                score -= 320;
+            }
+        }
+        if (!containsAnyKeyword(expMetaLow, "cover", "翻唱", "eng.ver", "eng ver", "english ver", "中文版", "英文版", "粤语版")) {
+            if (containsAnyKeyword(candMetaLow, "cover", "翻唱", "eng.ver", "eng ver", "english ver", "中文版", "英文版", "粤语版")) {
+                score -= 240;
+            }
+        }
+        if (!containsAnyKeyword(expMetaLow, "dj", "remix", "慢摇", "串烧", "0.8x", "1.2x", "sped up", "slowed")) {
+            if (containsAnyKeyword(candMetaLow, "dj版", "remix", "慢摇", "串烧", "0.8x", "1.2x", "sped up", "slowed")) {
+                score -= 200;
+            }
+        }
+        if (!containsAnyKeyword(expMetaLow, "live", "现场", "演唱会")) {
+            if (containsAnyKeyword(candMetaLow, "live", "现场", "演唱会")) {
+                score -= 90;
+            }
+        }
+
+        // 4. Duration proximity bonus / mismatch penalty
+        if (expectedDurationMs > 5000L && c.durationMs > 5000L) {
+            long diff = Math.abs(expectedDurationMs - c.durationMs);
+            if (diff <= 2500L) {
+                score += 55;
+            } else if (diff <= 6000L) {
+                score += 30;
+            } else if (diff > 25000L) {
+                score -= 70;
+            }
+        }
+
+        // 5. Search rank & popularity tie-breaker
+        score += Math.max(0, 24 - rankIndex * 2) + Math.min(10, Math.max(0, c.popularity / 10));
+        return score;
+    }
+
+    private static void collectStringList(List<Object> rawList, List<String> dest) {
+        if (rawList == null) return;
+        for (Object o : rawList) {
+            if (o instanceof String) {
+                String s = safe((String) o);
+                if (!s.isEmpty()) dest.add(s);
+            }
+        }
+    }
+
+    private static String extractPrimaryArtist(String rawArtist) {
+        String s = safe(rawArtist);
+        if (s.isEmpty()) return "";
+        String[] parts = s.split("\\s*(?:/|&|、|,|，|;|；|\\bfeat\\.?\\b|\\bft\\.?\\b)\\s*");
+        for (String p : parts) {
+            String clean = stripBracketSuffix(p).trim();
+            if (!clean.isEmpty()) return clean;
+        }
+        return stripBracketSuffix(s);
+    }
+
+    private static void addNormalizedArtistTokens(String rawArtist, List<String> out) {
+        String s = safe(rawArtist);
+        if (s.isEmpty()) return;
+        String[] parts = s.split("\\s*(?:/|&|、|,|，|;|；|\\bfeat\\.?\\b|\\bft\\.?\\b)\\s*");
+        for (String p : parts) {
+            String fullNorm = normalizeCompareText(p);
+            if (!fullNorm.isEmpty() && !out.contains(fullNorm)) {
+                out.add(fullNorm);
+            }
+            String cleanNorm = normalizeCompareText(stripBracketSuffix(p));
+            if (!cleanNorm.isEmpty() && !out.contains(cleanNorm)) {
+                out.add(cleanNorm);
+            }
+        }
+    }
+
+    private static boolean matchesAnyArtistToken(String expToken, List<String> candTokens) {
+        if (expToken == null || expToken.isEmpty() || candTokens == null) return false;
+        for (String ct : candTokens) {
+            if (ct.equals(expToken)) return true;
+            int minLen = Math.min(ct.length(), expToken.length());
+            if (minLen >= 2 && (ct.contains(expToken) || expToken.contains(ct))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean artistsRoughlyOverlap(String a, String b) {
+        List<String> ta = new ArrayList<>();
+        List<String> tb = new ArrayList<>();
+        addNormalizedArtistTokens(a, ta);
+        addNormalizedArtistTokens(b, tb);
+        for (String x : ta) {
+            if (matchesAnyArtistToken(x, tb)) return true;
+        }
+        return false;
+    }
+
+    private static String extractFirstBracketText(String s) {
+        if (s == null) return "";
+        Matcher m = Pattern.compile("[（(\\[【]([^）)\\]】]+)[）)\\]】]").matcher(s);
+        if (m.find()) {
+            return safe(m.group(1));
+        }
+        return "";
+    }
+
+    private static boolean containsAnyKeyword(String haystackLower, String... needles) {
+        if (haystackLower == null || haystackLower.isEmpty()) return false;
+        for (String n : needles) {
+            if (haystackLower.contains(n)) return true;
+        }
+        return false;
     }
 
     private static String stripJsonpWrapper(String raw) {
@@ -1483,7 +2571,45 @@ public final class LyricsTeleprompterBridge {
         return s.toLowerCase(Locale.ROOT).replaceAll("[\\s\\p{Punct}，。！？、：“”‘’《》【】（）()\\[\\]·\\-]+", "");
     }
 
-    // ==================== LRC Parser, HTML Decoder, Pre-Wrapper &Checksum ====================
+    /**
+     * Strips 4-byte supplementary/astral codepoints (e.g. emojis > U+FFFF), variation selectors,
+     * zero-width/bidi formatters, and normalizes full-width/non-breaking spaces to ASCII ' ' so
+     * SmallCore RTOS's BMP glyph renderer never hits unmapped astral codepoints.
+     */
+    public static String sanitizeBmpText(String input) {
+        if (input == null || input.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder(input.length());
+        int len = input.length();
+        for (int i = 0; i < len; ) {
+            int cp = input.codePointAt(i);
+            i += Character.charCount(cp);
+            if (cp > 0xFFFF) {
+                continue; // Strip 4-byte supplementary plane emojis/symbols
+            }
+            if (cp == 0x3000 || cp == 0x00A0) {
+                sb.append(' ');
+                continue;
+            }
+            if (cp == 0xFEFF
+                    || (cp >= 0xFE00 && cp <= 0xFE0F)
+                    || (cp >= 0x200B && cp <= 0x200F)
+                    || (cp >= 0x2028 && cp <= 0x202F)
+                    || (cp >= 0x2060 && cp <= 0x206F)
+                    || (cp >= 0xD800 && cp <= 0xDFFF)) {
+                continue;
+            }
+            if (cp < 0x20 && cp != '\n' && cp != '\t') {
+                continue;
+            }
+            if (cp >= 0x7F && cp <= 0x9F) {
+                continue;
+            }
+            sb.append((char) cp);
+        }
+        return sb.toString();
+    }
+
+    // ==================== LRC Parser, HTML Decoder, Pre-Wrapper & Checksum ====================
 
     public static LyricsManuscript parseLrcAndBuildManuscript(String title, String artist, String rawLrc) {
         return parseLrcAndBuildManuscript(title, artist, rawLrc, "");
@@ -1491,14 +2617,15 @@ public final class LyricsTeleprompterBridge {
 
     public static LyricsManuscript parseLrcAndBuildManuscript(
             String title, String artist, String rawLrc, String sourcePlatform) {
-        String cleanTitle = safe(title).isEmpty() ? "未知歌曲" : safe(title);
-        String cleanArtist = safe(artist);
-        String trackKey = normalizeTrackKey(cleanTitle, cleanArtist);
+        String rawCleanTitle = sanitizeBmpText(safe(title)).trim();
+        String cleanTitle = rawCleanTitle.isEmpty() ? "未知歌曲" : rawCleanTitle;
+        String cleanArtist = sanitizeBmpText(safe(artist)).trim();
+        String trackKey = normalizeTrackKey(safe(title), safe(artist));
         String did = computeLyricsDid(trackKey);
 
         String headerRaw = cleanArtist.isEmpty()
-                ? ("🎵 " + cleanTitle)
-                : ("🎵 " + cleanTitle + " - " + cleanArtist);
+                ? ("[歌词] " + cleanTitle)
+                : ("[歌词] " + cleanTitle + " - " + cleanArtist);
         List<String> headerLines = wrapLineToHudWidth(headerRaw, MAX_LINE_HALF_WIDTH);
 
         List<TimedLine> parsed = parseRawLrcLines(rawLrc);
@@ -1629,10 +2756,10 @@ public final class LyricsTeleprompterBridge {
 
             if (lineTimestamps.isEmpty()) continue;
 
-            // Strip any remaining inline karaoke tags like <00:12.40> or [00:12.40]
-            String text = line.substring(lastTagEnd)
+            // Strip any remaining inline karaoke tags like <00:12.40> or [00:12.40] and sanitize BMP glyphs
+            String text = sanitizeBmpText(line.substring(lastTagEnd)
                     .replaceAll("<\\d{1,3}:\\d{1,2}(?:[.:]\\d{1,3})?>", "")
-                    .replaceAll("\\[\\d{1,3}:\\d{1,2}(?:[.:]\\d{1,3})?\\]", "")
+                    .replaceAll("\\[\\d{1,3}:\\d{1,2}(?:[.:]\\d{1,3})?\\]", ""))
                     .replaceAll("\\s+", " ")
                     .trim();
 
@@ -1774,14 +2901,7 @@ public final class LyricsTeleprompterBridge {
     }
 
     public static String computeLyricsDid(String trackKey) {
-        byte[] bytes = safe(trackKey).getBytes(StandardCharsets.UTF_8);
-        int hash = 0x811c9dc5;
-        for (byte b : bytes) {
-            hash ^= (b & 0xFF);
-            hash *= 0x01000193;
-        }
-        int positive8Digits = (hash & 0x7FFFFFFF) % 100_000_000;
-        return LYRICS_DID_PREFIX + String.format(Locale.US, "%08d", positive8Digits);
+        return LYRICS_SLOT_DID;
     }
 
     public static String decodeHtmlEntities(String input) {
@@ -1835,10 +2955,19 @@ public final class LyricsTeleprompterBridge {
     // ==================== HTTP & String Helpers ====================
 
     private static String httpGet(String urlStr, Map<String, String> headers) throws Exception {
+        return httpRequest("GET", urlStr, null, headers);
+    }
+
+    private static String httpPost(String urlStr, String body, Map<String, String> headers) throws Exception {
+        return httpRequest("POST", urlStr, body, headers);
+    }
+
+    private static String httpRequest(
+            String method, String urlStr, String reqBody, Map<String, String> headers) throws Exception {
         HttpURLConnection conn = null;
         try {
             conn = (HttpURLConnection) new URL(urlStr).openConnection();
-            conn.setRequestMethod("GET");
+            conn.setRequestMethod(method);
             conn.setConnectTimeout(HTTP_TIMEOUT_MS);
             conn.setReadTimeout(HTTP_TIMEOUT_MS);
             conn.setRequestProperty("User-Agent",
@@ -1847,6 +2976,13 @@ public final class LyricsTeleprompterBridge {
             if (headers != null) {
                 for (Map.Entry<String, String> e : headers.entrySet()) {
                     conn.setRequestProperty(e.getKey(), e.getValue());
+                }
+            }
+            if (reqBody != null && !reqBody.isEmpty()) {
+                conn.setDoOutput(true);
+                byte[] outBytes = reqBody.getBytes(StandardCharsets.UTF_8);
+                try (OutputStream os = conn.getOutputStream()) {
+                    os.write(outBytes);
                 }
             }
             int code = conn.getResponseCode();
@@ -1892,5 +3028,17 @@ public final class LyricsTeleprompterBridge {
 
     private static String safe(String s) {
         return s == null ? "" : s.trim();
+    }
+
+    private static void safeLogI(String msg) {
+        try {
+            Log.i(TAG, msg);
+        } catch (Throwable ignored) {}
+    }
+
+    private static void safeLogW(String msg) {
+        try {
+            Log.w(TAG, msg);
+        } catch (Throwable ignored) {}
     }
 }
