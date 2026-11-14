@@ -1036,7 +1036,8 @@ public final class CustomAiHooks {
         final String dialogId = safeStr(agent != null ? agent.getDialogId() : null);
         final boolean enableTts = agent != null && agent.getEnableTTS();
         final boolean autoNextRound = agent != null && agent.getAutoNextRound();
-        final boolean allowAutoNext = autoNextRound && cfg.autoContinueAfterTts;
+        final boolean allowAutoNext = (mediaAction != SystemMediaBridge.ACTION_PLAY_SEARCH)
+                && autoNextRound && cfg.autoContinueAfterTts;
 
         postToNativeCb(new Runnable() {
             @Override
@@ -1046,7 +1047,8 @@ public final class CustomAiHooks {
             }
         });
 
-        final SystemMediaBridge.ActionResult res = SystemMediaBridge.execute(app, mediaAction, logId);
+        final SystemMediaBridge.ActionResult res =
+                SystemMediaBridge.execute(app, mediaAction, query, logId);
         if (st.turnSeq.get() != seq) {
             CustomAiCallLog.finishInterrupted(app, logId, "媒体指令执行期间被新轮打断");
             return;
@@ -1071,21 +1073,60 @@ public final class CustomAiHooks {
                                 if (st.activeLogId == logId) {
                                     st.activeLogId = 0L;
                                 }
-                                CustomAiCallLog.finishSuccess(app, logId, reply + " [" + res.debugTrace + "]");
-                                // Ensure track plays (or stays paused) once voice assistant SCO/AudioFocus releases!
-                                if (MAIN_HANDLER != null) {
+                                final boolean hasDeferredUri = !safeStr(res.deferredLaunchUri).isEmpty();
+                                if (hasDeferredUri && MAIN_HANDLER != null) {
+                                    // Launch NetEase/QQ Music deep link 160ms AFTER Glasses TTS finishes
+                                    // so Bluetooth SCO/TTS AudioFocus releases cleanly before music starts!
                                     MAIN_HANDLER.postDelayed(new Runnable() {
                                         @Override
                                         public void run() {
                                             EXECUTOR.execute(new Runnable() {
                                                 @Override
                                                 public void run() {
-                                                    SystemMediaBridge.enforcePostAnnouncementState(
-                                                            app, mediaAction, res.targetPackage, logId);
+                                                    boolean launched = SystemMediaBridge.launchDeferredUri(app, res, logId);
+                                                    CustomAiCallLog.finishSuccess(app, logId,
+                                                            reply + " [" + res.debugTrace + ", launched=" + launched + "]");
                                                 }
                                             });
                                         }
-                                    }, 380L);
+                                    }, 160L);
+                                    for (final long delayMs : new long[] {1100L, 2400L}) {
+                                        MAIN_HANDLER.postDelayed(new Runnable() {
+                                            @Override
+                                            public void run() {
+                                                EXECUTOR.execute(new Runnable() {
+                                                    @Override
+                                                    public void run() {
+                                                        SystemMediaBridge.enforcePostAnnouncementState(
+                                                                app, mediaAction, res.targetPackage, logId);
+                                                    }
+                                                });
+                                            }
+                                        }, delayMs);
+                                    }
+                                } else {
+                                    if (hasDeferredUri) {
+                                        boolean launched = SystemMediaBridge.launchDeferredUri(app, res, logId);
+                                        CustomAiCallLog.finishSuccess(app, logId,
+                                                reply + " [" + res.debugTrace + ", launched=" + launched + "]");
+                                    } else {
+                                        CustomAiCallLog.finishSuccess(app, logId, reply + " [" + res.debugTrace + "]");
+                                    }
+                                    // Ensure track plays (or stays paused) once voice assistant SCO/AudioFocus releases!
+                                    if (MAIN_HANDLER != null) {
+                                        MAIN_HANDLER.postDelayed(new Runnable() {
+                                            @Override
+                                            public void run() {
+                                                EXECUTOR.execute(new Runnable() {
+                                                    @Override
+                                                    public void run() {
+                                                        SystemMediaBridge.enforcePostAnnouncementState(
+                                                                app, mediaAction, res.targetPackage, logId);
+                                                    }
+                                                });
+                                            }
+                                        }, 380L);
+                                    }
                                 }
                                 if (playedNormally && allowAutoNext && ctrl != null && MAIN_HANDLER != null) {
                                     Runnable nextTask = new Runnable() {
@@ -1372,10 +1413,32 @@ public final class CustomAiHooks {
                                 listener.onStartResult(true, "ok");
                             }
                         });
-                        final SystemMediaBridge.ActionResult res = SystemMediaBridge.execute(app, mediaAction, mediaLogId);
+                        final SystemMediaBridge.ActionResult res =
+                                SystemMediaBridge.execute(app, mediaAction, query, mediaLogId);
+                        String trace = res.debugTrace;
+                        if (!safeStr(res.deferredLaunchUri).isEmpty()) {
+                            boolean launched = SystemMediaBridge.launchDeferredUri(app, res, mediaLogId);
+                            trace += ", launched=" + launched;
+                            if (MAIN_HANDLER != null) {
+                                for (final long delayMs : new long[] {950L, 2200L}) {
+                                    MAIN_HANDLER.postDelayed(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            EXECUTOR.execute(new Runnable() {
+                                                @Override
+                                                public void run() {
+                                                    SystemMediaBridge.enforcePostAnnouncementState(
+                                                            app, mediaAction, res.targetPackage, mediaLogId);
+                                                }
+                                            });
+                                        }
+                                    }, delayMs);
+                                }
+                            }
+                        }
                         final String reply = res.spokenReply;
                         CustomAiCallLog.onTextDelta(mediaLogId, reply);
-                        CustomAiCallLog.finishSuccess(app, mediaLogId, reply + " [" + res.debugTrace + "]");
+                        CustomAiCallLog.finishSuccess(app, mediaLogId, reply + " [" + trace + "]");
                         ConversationMemory.appendTurn("ask_" + dialogId, query, reply, cfg.maxHistoryTurns);
                         final long elapsed = SystemClock.uptimeMillis() - startMs;
                         postToNativeCb(new Runnable() {
