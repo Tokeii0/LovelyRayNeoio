@@ -12,7 +12,7 @@
 ## ✨ 为什么做 LovelyRayNeoio？
 
 雷鸟智能眼镜（尤其是 **雷鸟 io**）自带的语音唤醒（「小雷小雷」）、蓝牙收音（ASR）与原厂语音合成（TTS）体验非常顺滑，但受限于固定云端大模型：
-1. 无法自由切换自己常用的 **OpenAI (`GPT-4o` / `GPT-5` / `o3`)、DeepSeek、Claude 反代、SiliconFlow、阿里百炼、OneAPI / NewAPI** 等前沿模型；
+1. 无法自由切换自己常用的 **OpenAI (`GPT-5.4` / `GPT-5.4-mini`)、Claude (`Claude Sonnet 4.6` / `Opus 4.6`)、Gemini (`Gemini 3.1 Pro` / `Gemini 3.5 Flash`)、DeepSeek (`DeepSeek-V3.2`)、千问 (`Qwen3.5` / `Qwen3.8-Max`)、Kimi (`Kimi-K2.5`)、智谱 (`GLM-5`)** 以及 **OpenRouter / OneAPI / NewAPI** 等最新前沿模型；
 2. 若简单粗暴地拦截全部对话，会导致 **联网查天气、创建手机待办事项/提醒/倒计时、拍照录像、高德导航** 等官方原生技能失效；
 3. 雷鸟 io 官方云端目前 **不支持控制手机第三方音乐播放器（如网易云音乐、QQ音乐）切歌与读取当前播放曲目**。
 
@@ -129,14 +129,29 @@ adb install -r RayNeo_AI_1.0.20_CustomAI.apk
 ### 2. 填写接口参数
 | 配置项 | 说明与建议 |
 | :--- | :--- |
-| **接口协议** | 支持一键切换 **`/chat/completions`**（绝大多数中转站、DeepSeek、百炼、硅基流动等）与 **`/responses`**（OpenAI 新版 Responses API / `o3` / `GPT-5` 等） |
-| **快捷预设** | 顶部提供 `OpenAI Chat`、`OpenAI Resp`、`DeepSeek`、`SiliconFlow`、`阿里百炼兼容` 一键填入模板 |
-| **Base URL** | 自动补全路径：填 `https://api.openai.com`、`https://api.openai.com/v1` 或完整 `/v1/chat/completions` 均可自动识别。<br>*(注：遵循 Android 9+ 网络安全策略，请使用 **`https://`** 地址)* |
-| **API Key** | 填写对应平台的 `sk-...` 密钥（仅加密保存在手机本地应用私有目录 `SharedPreferences`） |
-| **模型名称 (Model)** | 如 `gpt-4o-mini`、`gpt-5-mini`、`deepseek-chat`、`Qwen/Qwen2.5-72B-Instruct` 等 |
-| **思考强度 (Reasoning Effort)** | 留空为普通模式；对支持推理的模型可选择 `low` / `medium` / `high` |
+| **接口协议** | 支持一键切换 **`/chat/completions`**（OpenRouter、DeepSeek、百炼、硅基流动、NewAPI 等通用）与 **`/responses`**（OpenAI 原生 Responses API，`GPT-5.4` 系列推荐） |
+| **快捷预设** | 顶部提供 `OpenAI Chat`、`OpenAI Resp`、`DeepSeek`、`SiliconFlow`、`阿里百炼兼容` 一键填入模板，填入后可自由修改模型 ID |
+| **Base URL** | 自动补全路径：填 `https://api.openai.com`、`https://openrouter.ai/api/v1` 或完整 `/v1/chat/completions` 均可自动识别。<br>*(注：遵循 Android 9+ 网络安全策略，请使用 **`https://`** 地址)* |
+| **API Key** | 填写对应平台的 `sk-...` 密钥（仅保存在手机本地应用私有目录 `SharedPreferences`） |
+| **模型名称 (Model)** | 如 `gpt-5.4`、`gpt-5.4-mini`、`claude-sonnet-4-6`、`gemini-3.5-flash`、`deepseek-v3.2`、`qwen3.5-plus`、`kimi-k2.5`、`glm-5` 等 |
+| **思考强度 (Reasoning Effort)** | 眼镜随身语音建议留空或选 `low`（首字响应更快）；复杂推理问答可选 `medium` / `high` |
 | **官方功能指令交给原版执行** | **建议保持开启（默认开启）**，确保天气、待办提醒、拍照、导航等全部走雷鸟官方真实接口 |
 | **播报完自动开启下一轮拾音** | 默认关闭（推荐关闭，避免眼镜刚显示完回答就被下一轮收音清屏） |
+
+### 3. 🌟 主流新模型填写参考（眼镜端实测推荐）
+
+> 👓 **配镜小贴士**：眼镜语音交互对**首字延迟（TTFT）**敏感，日常随身问答强烈优先推荐各家的 **`Flash` / `Mini` 极速档**或关闭重度深度思考；手机端 `Ask AI` 长文问答可切旗舰满血档。
+
+| 平台 / 厂商 | Base URL 示例 | 协议选择 | 眼镜极速秒回推荐 (低延迟) | 旗舰满血 / 深度推理推荐 |
+| :--- | :--- | :--- | :--- | :--- |
+| **OpenAI** | `https://api.openai.com/v1` | `/responses` 或 `/chat/completions` | `gpt-5.4-mini` / `gpt-5-mini` | `gpt-5.4` |
+| **Anthropic (兼容网关/中转)** | `https://openrouter.ai/api/v1` *(或自建 NewAPI)* | `/chat/completions` | `claude-sonnet-4-6` | `claude-opus-4-6` |
+| **Google Gemini** | `https://generativelanguage.googleapis.com/v1beta/openai` | `/chat/completions` | `gemini-3.5-flash` | `gemini-3.1-pro-preview` |
+| **DeepSeek 官方** | `https://api.deepseek.com/v1` | `/chat/completions` | `deepseek-v3.2` / `deepseek-chat` | `deepseek-v3.2-speciale` / `deepseek-reasoner` |
+| **阿里云百炼 (Qwen)** | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `/chat/completions` | `qwen3.5-flash` / `qwen3.5-plus` | `qwen3.8-max` |
+| **月之暗面 (Kimi)** | `https://api.moonshot.cn/v1` | `/chat/completions` | `kimi-k2.5` | `kimi-k2.5` |
+| **智谱 BigModel (GLM)** | `https://open.bigmodel.cn/api/paas/v4` | `/chat/completions` | `glm-5.3-flash` | `glm-5` |
+| **OpenRouter 聚合** | `https://openrouter.ai/api/v1` | `/chat/completions` | `google/gemini-3.5-flash` | `anthropic/claude-sonnet-4-6` / `openai/gpt-5.4` |
 
 填写完成后，点击面板内的 **「🔌 发送测试请求」**，看到返回 `✅ 连接成功` 与延迟毫秒数后，点击 **「💾 保存并立即生效」** 即可！  
 *(面板底部还支持 **「📋 导出配置」 / 「📥 导入配置」**，方便通过剪贴板备份或迁移整套 JSON 配置。)*
