@@ -3,6 +3,7 @@ import com.rayneo.customai.CustomAiCallLog;
 import com.rayneo.customai.CustomAiConfig;
 import com.rayneo.customai.CustomAiHooks;
 import com.rayneo.customai.JsonMini;
+import com.rayneo.customai.LyricsTeleprompterBridge;
 import com.rayneo.customai.OpenAiApiClient;
 import com.rayneo.customai.SystemMediaBridge;
 import com.sun.net.httpserver.HttpExchange;
@@ -113,6 +114,7 @@ public final class TestOpenAiClient {
             testResponsesSseWithReasoning(baseUrl);
             testResponsesJson(baseUrl);
             testMusicSearchMockHttp(server, "http://127.0.0.1:" + port);
+            testLyricsTeleprompterUnitAndMockHttp(server, "http://127.0.0.1:" + port);
             System.out.println("ALL TESTS PASSED!");
         } finally {
             server.stop(0);
@@ -440,6 +442,172 @@ public final class TestOpenAiClient {
         if (!qqUri.startsWith("qqmusic://qq.com/media/playSonglist?p=")) {
             throw new AssertionError("Unexpected QQ URI: " + qqUri);
         }
+    }
+
+    private static void testLyricsTeleprompterUnitAndMockHttp(HttpServer server, String mockHost) {
+        // 1. Exact 32-bit FNV-1a checksum test vectors
+        assertEq("811c9dc5", LyricsTeleprompterBridge.computeFnv1aHex(new byte[0]), "fnv1a empty");
+        assertEq("e40c292c", LyricsTeleprompterBridge.computeFnv1aHex("a".getBytes(StandardCharsets.UTF_8)), "fnv1a 'a'");
+        assertEq("bf9cf968", LyricsTeleprompterBridge.computeFnv1aHex("foobar".getBytes(StandardCharsets.UTF_8)), "fnv1a 'foobar'");
+
+        // 2. HTML entity decoding (QQ Music style)
+        String htmlLrc = "[00&#58;01&#46;50]词&#58;周杰伦&nbsp;&amp;&nbsp;方文山&#10;[00&#58;05&#46;00]故事的小黄花&#x21;";
+        String decoded = LyricsTeleprompterBridge.decodeHtmlEntities(htmlLrc);
+        assertEq("[00:01.50]词:周杰伦 & 方文山\n[00:05.00]故事的小黄花!", decoded, "html entity decode");
+
+        // 3. LRC parser + CJK HUD line pre-wrapping + UTF-8 '\n' byte offset alignment
+        String sampleLrc = "[ti:模特]\n[ar:李荣浩]\n"
+                + "[00:02.00]穿华丽的服装 为原始的渴望而站着\n"
+                + "[00:08.50][00:28.00]用完美的表情 为脆弱的城市而撑着\n"
+                + "[00:14.00]这是一整行非常非常长超过十七个中文字需要自动切分换行的歌词测试内容\n";
+        LyricsTeleprompterBridge.LyricsManuscript ms =
+                LyricsTeleprompterBridge.parseLrcAndBuildManuscript("模特", "李荣浩", sampleLrc, "网易云音乐");
+        assertEq(true, ms.hasSyncedLyrics, "ms hasSyncedLyrics");
+        assertEq(true, LyricsTeleprompterBridge.isLyricsDid(ms.did), "ms did prefix 99");
+        assertEq(LyricsTeleprompterBridge.computeFnv1aHex(ms.utf8Bytes), ms.checksum, "ms checksum matches utf8");
+
+        String fullUtf8 = new String(ms.utf8Bytes, StandardCharsets.UTF_8);
+        String[] splitCheck = fullUtf8.split("\n", -1);
+        assertEq(ms.lines.length, splitCheck.length, "1:1 line count with \\n");
+        for (int i = 0; i < ms.lines.length; i++) {
+            assertEq(ms.lines[i], splitCheck[i], "line[" + i + "] content");
+            if (LyricsTeleprompterBridge.measureHalfWidth(ms.lines[i]) > LyricsTeleprompterBridge.MAX_LINE_HALF_WIDTH) {
+                throw new AssertionError("Line exceeded HUD width: " + ms.lines[i]);
+            }
+            byte[] lineBytes = ms.lines[i].getBytes(StandardCharsets.UTF_8);
+            String slice = new String(ms.utf8Bytes, ms.lineByteOffsets[i], lineBytes.length, StandardCharsets.UTF_8);
+            assertEq(ms.lines[i], slice, "byte offset alignment at line " + i);
+            if (i > 0 && ms.lineTimesMs[i] < ms.lineTimesMs[i - 1]) {
+                throw new AssertionError("Timestamps not monotonic at " + i);
+            }
+        }
+
+        // Binary search check
+        int idxAt9s = LyricsTeleprompterBridge.findActiveLineIndex(ms.lineTimesMs, 9000L);
+        assertEq("用完美的表情 为脆弱的城市而撑着", ms.lines[idxAt9s], "active line at 9s");
+        int idxAt29s = LyricsTeleprompterBridge.findActiveLineIndex(ms.lineTimesMs, 29000L);
+        assertEq("用完美的表情 为脆弱的城市而撑着", ms.lines[idxAt29s], "repeated chorus tag at 29s");
+
+        // Fallback manuscript when no timed lyrics exist
+        LyricsTeleprompterBridge.LyricsManuscript emptyMs =
+                LyricsTeleprompterBridge.parseLrcAndBuildManuscript("纯音乐", "测试艺术家", "", "");
+        assertEq(false, emptyMs.hasSyncedLyrics, "fallback hasSyncedLyrics=false");
+        assertEq("暂无滚动歌词", emptyMs.lines[emptyMs.lines.length - 1], "fallback text");
+
+        // 4. 6-Field GlassesMsg protobuf encode/decode + mandatory version=1 check
+        String startJson = LyricsTeleprompterBridge.buildAppStartSnippetRequestJson(
+                ms, ms.lineByteOffsets[0], ms.lineByteOffsets[1]);
+        byte[] encoded = LyricsTeleprompterBridge.encodeGlassesMsg(
+                LyricsTeleprompterBridge.MSG_START, startJson, ms.utf8Bytes, 42);
+        assertEq(0x08, encoded[0] & 0xFF, "protobuf field 1 tag 0x08");
+        assertEq(0x01, encoded[1] & 0xFF, "protobuf version == 1");
+
+        LyricsTeleprompterBridge.GlassesMsg decodedMsg = LyricsTeleprompterBridge.decodeGlassesMsg(encoded);
+        assertEq(1, decodedMsg.version, "decoded version");
+        assertEq(LyricsTeleprompterBridge.MSG_START, decodedMsg.type, "decoded type 0x02");
+        assertEq(42, decodedMsg.sequence, "decoded sequence");
+        assertEq(startJson, decodedMsg.jsonMessage, "decoded jsonMessage");
+        assertEq(ms.utf8Bytes.length, decodedMsg.data.length, "decoded snippet data length");
+
+        Map<String, Object> startObj = JsonMini.parseObject(startJson);
+        assertEq(true, startObj.get("snippetMode"), "start snippetMode");
+        assertEq(3, JsonMini.getInt(startObj, "scroll", 0), "start manual scroll=3");
+        assertEq(420, JsonMini.getInt(startObj, "width", 0), "start HUD width=420");
+        Map<String, Object> sInfo = JsonMini.getMap(startObj, "snippetInfo");
+        assertEq(ms.lineByteOffsets[0], JsonMini.getInt(sInfo, "inlineOffset", -1), "start inlineOffset==pageOffset");
+
+        String progJson = LyricsTeleprompterBridge.buildProgressUpdateJson(
+                ms.did, ms.lineByteOffsets[1], ms.lineByteOffsets[2], true);
+        Map<String, Object> progObj = JsonMini.parseObject(progJson);
+        assertEq(1, JsonMini.getInt(progObj, "action", 0), "prog action=1");
+        assertEq(ms.lineByteOffsets[1], JsonMini.getInt(progObj, "pageOffset", -1), "prog pageOffset");
+        assertEq(ms.lineByteOffsets[2], JsonMini.getInt(progObj, "highLightOffset", -1), "prog highLightOffset");
+        assertEq(ms.lineByteOffsets[1],
+                JsonMini.getInt(JsonMini.getMap(progObj, "snippetInfo"), "inlineOffset", -1),
+                "prog snippetInfo.inlineOffset");
+
+        // Conflict code classifier & nested message unwrapping
+        assertEq(true, LyricsTeleprompterBridge.isConflictCode(8), "conflict code 8");
+        assertEq(true, LyricsTeleprompterBridge.isConflictCode(21), "conflict code 21");
+        assertEq(false, LyricsTeleprompterBridge.isConflictCode(23), "code 23 is snippet success, not conflict");
+
+        Map<String, Object> innerMsg = JsonMini.parseObject("{\"businessId\":\"TELEPROMPTER\",\"deviceId\":\"dev_1\"}");
+        innerMsg.put("payload", encoded);
+        Map<String, Object> outerEvent = new java.util.HashMap<>();
+        outerEvent.put("message", innerMsg);
+        Map unwrapped = LyricsTeleprompterBridge.unwrapMessageMap(outerEvent);
+        assertEq("TELEPROMPTER", unwrapped.get("businessId"), "unwrap nested messageReceived map");
+
+        // 5. Voice commands & CustomAiConfig serialization
+        assertEq(LyricsTeleprompterBridge.CMD_ENABLE_SYNC,
+                LyricsTeleprompterBridge.matchVoiceCommand("打开歌词"), "voice: 打开歌词");
+        assertEq(LyricsTeleprompterBridge.CMD_ENABLE_SYNC,
+                LyricsTeleprompterBridge.matchVoiceCommand("小雷小雷，把歌词投到眼镜上"), "voice: 把歌词投到眼镜上");
+        assertEq(LyricsTeleprompterBridge.CMD_ENABLE_SYNC,
+                LyricsTeleprompterBridge.matchVoiceCommand("开启提词器歌词联动"), "voice: 开启提词器歌词联动");
+        assertEq(LyricsTeleprompterBridge.CMD_DISABLE_SYNC,
+                LyricsTeleprompterBridge.matchVoiceCommand("关闭歌词"), "voice: 关闭歌词");
+        assertEq(LyricsTeleprompterBridge.CMD_DISABLE_SYNC,
+                LyricsTeleprompterBridge.matchVoiceCommand("取消歌词联动"), "voice: 取消歌词联动");
+        // Negative checks: open-ended LLM questions about lyrics must go to Custom LLM!
+        assertEq(LyricsTeleprompterBridge.CMD_NONE,
+                LyricsTeleprompterBridge.matchVoiceCommand("帮我写一关于夏天的歌词"), "写歌词->CustomLLM");
+        assertEq(LyricsTeleprompterBridge.CMD_NONE,
+                LyricsTeleprompterBridge.matchVoiceCommand("这首歌的歌词是什么意思"), "歌词意思->CustomLLM");
+        assertEq(null, CustomAiHooks.classifySkillOrRealtimeIntent("打开歌词"), "打开歌词不走RayClaw");
+
+        CustomAiConfig cfg1 = new CustomAiConfig();
+        cfg1.syncLyricsToTeleprompter = true;
+        CustomAiConfig cfg2 = CustomAiConfig.fromJsonString(cfg1.toJsonString());
+        assertEq(true, cfg2.syncLyricsToTeleprompter, "CustomAiConfig syncLyricsToTeleprompter roundtrip");
+
+        // 6. Mock HTTP NetEase & QQ Music LRC fetching
+        server.createContext("/api/song/lyric", new HttpHandler() {
+            @Override
+            public void handle(HttpExchange ex) throws IOException {
+                String q = ex.getRequestURI().getRawQuery();
+                String resp = (q != null && q.contains("id=27731176"))
+                        ? "{\"code\":200,\"lrc\":{\"lyric\":\"[00:01.00]穿华丽的服装\\n[00:05.20]为原始的渴望而站着\\n\"}}"
+                        : "{\"code\":200,\"nolyric\":true}";
+                byte[] bytes = resp.getBytes(StandardCharsets.UTF_8);
+                ex.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+                ex.sendResponseHeaders(200, bytes.length);
+                try (OutputStream os = ex.getResponseBody()) {
+                    os.write(bytes);
+                }
+            }
+        });
+
+        server.createContext("/lyric/fcgi-bin/fcg_query_lyric_new.fcg", new HttpHandler() {
+            @Override
+            public void handle(HttpExchange ex) throws IOException {
+                String resp = "MusicJsonCallback({\"retcode\":0,\"lyric\":\"[00&#58;02&#46;00]故事的小黄花&#10;[00&#58;06&#46;50]从出生那年就飘着\"})";
+                byte[] bytes = resp.getBytes(StandardCharsets.UTF_8);
+                ex.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+                ex.sendResponseHeaders(200, bytes.length);
+                try (OutputStream os = ex.getResponseBody()) {
+                    os.write(bytes);
+                }
+            }
+        });
+
+        SystemMediaBridge.recordResolvedSongHint(
+                SystemMediaBridge.PKG_NETEASE, "27731176", "", "模特", "李荣浩");
+        LyricsTeleprompterBridge.LyricsManuscript neOnline =
+                LyricsTeleprompterBridge.fetchLyricsManuscriptOnline(
+                        "模特", "李荣浩", SystemMediaBridge.PKG_NETEASE, mockHost, mockHost);
+        assertEq(true, neOnline.hasSyncedLyrics, "mock NetEase LRC synced");
+        assertEq("网易云音乐", neOnline.sourcePlatform, "mock NetEase sourcePlatform");
+        assertEq("为原始的渴望而站着", neOnline.lines[neOnline.lines.length - 1], "mock NetEase last line");
+
+        SystemMediaBridge.recordResolvedSongHint(
+                SystemMediaBridge.PKG_QQMUSIC, "", "0039MnYb0qxYhV", "晴天", "周杰伦");
+        LyricsTeleprompterBridge.LyricsManuscript qqOnline =
+                LyricsTeleprompterBridge.fetchLyricsManuscriptOnline(
+                        "晴天", "周杰伦", SystemMediaBridge.PKG_QQMUSIC, mockHost, mockHost);
+        assertEq(true, qqOnline.hasSyncedLyrics, "mock QQ LRC synced");
+        assertEq("QQ音乐", qqOnline.sourcePlatform, "mock QQ sourcePlatform");
+        assertEq("从出生那年就飘着", qqOnline.lines[qqOnline.lines.length - 1], "mock QQ last line");
     }
 
     private static void writeSse(OutputStream os, String chunk) throws IOException {

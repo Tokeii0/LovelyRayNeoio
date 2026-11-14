@@ -95,6 +95,7 @@ TARGET_CLASSES = {
     "MOD-02": ("com/rayneo/venus/MainActivity.smali", "MainActivity"),
     "MOD-03": ("com/rayneo/airuntime/controller/AssistantController.smali", "AssistantController"),
     "MOD-04": ("com/rayneo/airuntime/controller/AskAITask.smali", "AskAITask"),
+    "MOD-05": ("com/rayneo/rayneo_venus_sdk_plugin/o4.smali", "RayneoNetBridge_o4"),
 }
 
 
@@ -150,7 +151,7 @@ def check_env() -> None:
         raise FileNotFoundError(f"No smali/baksmali JARs found in {TOOLS_LIB}")
 
 
-def build_custom_dex(work_dir: Path) -> Path:
+def build_custom_dex(work_dir: Path) -> tuple[Path, Path]:
     print("\n=== Step 1: Compiling CustomAI Java sources + D8 -> DEX ===")
     stub_cls = work_dir / "cls_stubs"
     app_cls = work_dir / "cls_app"
@@ -185,6 +186,12 @@ def build_custom_dex(work_dir: Path) -> Path:
         *src_files,
     ])
 
+    stub_class_files = list(stub_cls.rglob("*.class"))
+    stub_jar = work_dir / "custom_stubs.jar"
+    with zipfile.ZipFile(stub_jar, "w", compression=zipfile.ZIP_STORED) as zf:
+        for scf in stub_class_files:
+            zf.write(scf, scf.relative_to(stub_cls).as_posix())
+
     class_files = list(app_cls.rglob("*.class"))
     app_jar = work_dir / "custom_app.jar"
     with zipfile.ZipFile(app_jar, "w", compression=zipfile.ZIP_STORED) as zf:
@@ -194,6 +201,7 @@ def build_custom_dex(work_dir: Path) -> Path:
         str(D8_BAT),
         "--min-api", MIN_API,
         "--lib", str(ANDROID_JAR),
+        "--classpath", str(stub_jar),
         "--output", str(dex_out),
         str(app_jar),
     ])
@@ -202,7 +210,7 @@ def build_custom_dex(work_dir: Path) -> Path:
     if not out_dex.exists():
         raise FileNotFoundError(f"Expected d8 output {out_dex} not found")
     print(f"[OK] Compiled custom DEX: {out_dex} ({out_dex.stat().st_size} bytes)")
-    return out_dex
+    return out_dex, stub_jar
 
 
 def wrap_block(mod_id: str, title: str, body: str) -> str:
@@ -578,6 +586,22 @@ def patch_ask_ai_task(src: str) -> str:
     return out
 
 
+def patch_rayneo_net_bridge(src: str) -> str:
+    # MOD-05: Tap RayneoNet incoming BLE events (TELEPROMPTER responses, fileShareSuccess, BT state)
+    block_5 = wrap_block(
+        "MOD-05",
+        "Observe RayneoNet BLE events for Lyrics <-> Teleprompter real-time sync",
+        "    invoke-static/range {p0 .. p2}, Lcom/rayneo/customai/CustomAiHooks;->onRayneoNetEvent(Ljava/lang/Object;Ljava/lang/String;Ljava/util/Map;)V",
+    )
+    return replace_in_method(
+        src,
+        r"public final F\(Ljava/lang/String;Ljava/util/Map;\)V",
+        r"^\s*\.(?:registers|locals)\s+\d+",
+        block_5,
+        "MOD-05 o4.F(eventName, data)",
+    )
+
+
 def locate_target_dex(apk_path: Path) -> tuple[list[str], str]:
     with zipfile.ZipFile(apk_path, "r") as zf:
         dex_names = sorted(
@@ -590,6 +614,7 @@ def locate_target_dex(apk_path: Path) -> tuple[list[str], str]:
             b"Lcom/rayneo/venus/MainActivity;",
             b"Lcom/rayneo/airuntime/controller/AssistantController;",
             b"Lcom/rayneo/airuntime/controller/AskAITask;",
+            b"Lcom/rayneo/rayneo_venus_sdk_plugin/o4;",
         ]
         found = []
         for dn in dex_names:
@@ -641,7 +666,7 @@ def patch_apk(input_apk: Path, output_apk: Path) -> None:
     work_dir.mkdir(parents=True)
 
     try:
-        custom_dex = build_custom_dex(work_dir)
+        custom_dex, stub_jar = build_custom_dex(work_dir)
         target_dex_names, new_dex_name = locate_target_dex(input_apk)
 
         patchers = {
@@ -649,6 +674,7 @@ def patch_apk(input_apk: Path, output_apk: Path) -> None:
             "MOD-02": patch_main_activity,
             "MOD-03": patch_assistant_controller,
             "MOD-04": patch_ask_ai_task,
+            "MOD-05": patch_rayneo_net_bridge,
         }
         applied_mods: set[str] = set()
         patched_dex_map: dict[str, Path] = {}
@@ -656,7 +682,7 @@ def patch_apk(input_apk: Path, output_apk: Path) -> None:
 
         classpath = str(TOOLS_LIB / "*")
 
-        print("\n=== Step 2: Baksmali -> Inject MOD-01..MOD-04 -> Smali ===")
+        print("\n=== Step 2: Baksmali -> Inject MOD-01..MOD-05 -> Smali ===")
         with zipfile.ZipFile(input_apk, "r") as zf:
             for dn in target_dex_names:
                 raw_dex = work_dir / f"orig_{dn}"
@@ -703,6 +729,7 @@ def patch_apk(input_apk: Path, output_apk: Path) -> None:
             str(D8_BAT),
             "--min-api", MIN_API,
             "--lib", str(ANDROID_JAR),
+            "--classpath", str(stub_jar),
             "--output", str(verify_dir),
             *[str(p) for p in patched_dex_map.values()],
             str(custom_dex),

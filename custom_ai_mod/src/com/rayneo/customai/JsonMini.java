@@ -67,6 +67,20 @@ public final class JsonMini {
         return asList(m.get(key));
     }
 
+    public static int getInt(Map<String, Object> m, String key, int def) {
+        if (m == null) return def;
+        Object v = m.get(key);
+        if (v instanceof Number) {
+            return ((Number) v).intValue();
+        }
+        if (v instanceof String) {
+            try {
+                return Integer.parseInt(((String) v).trim());
+            } catch (Throwable ignored) {}
+        }
+        return def;
+    }
+
     private static void writeValue(StringBuilder sb, Object val) {
         if (val == null) {
             sb.append("null");

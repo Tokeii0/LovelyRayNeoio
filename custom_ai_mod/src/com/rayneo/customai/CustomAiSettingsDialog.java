@@ -473,9 +473,13 @@ public final class CustomAiSettingsDialog {
                 activity, "调用时弹出 Toast 提示", "每次触发自定义接口时短暂提示渠道与模型名", cfg.showCallToast);
         final ToggleRow swAutoNext = new ToggleRow(
                 activity, "播报完自动开启下一轮拾音", "默认关闭，避免回答刚显示就被下一轮拾音冲掉", cfg.autoContinueAfterTts);
+        final ToggleRow swLyrics = new ToggleRow(
+                activity, "🎤 音乐歌词实时联动眼镜提词器",
+                "播放音乐时自动抓取网易云/QQ音乐滚动歌词并同步到眼镜提词器（支持语音「打开歌词 / 关闭歌词」）",
+                cfg.syncLyricsToTeleprompter);
 
         ToggleRow[] allRows = new ToggleRow[]{
-                swEnabled, swGlasses, swPhoneAsk, swKeepLocal, swSkills, swFloating, swToast, swAutoNext
+                swEnabled, swGlasses, swPhoneAsk, swKeepLocal, swSkills, swLyrics, swFloating, swToast, swAutoNext
         };
         for (int i = 0; i < allRows.length; i++) {
             cardSwitches.addView(allRows[i], new LinearLayout.LayoutParams(
@@ -484,6 +488,37 @@ public final class CustomAiSettingsDialog {
                 addHairlineDivider(activity, cardSwitches, 0);
             }
         }
+
+        swLyrics.setOnChangeListener(new Runnable() {
+            @Override
+            public void run() {
+                CustomAiConfig immediate = CustomAiConfig.load(activity);
+                immediate.syncLyricsToTeleprompter = swLyrics.isChecked();
+                immediate.save(activity);
+                LyricsTeleprompterBridge.onConfigChanged(activity);
+            }
+        });
+
+        Button btnSyncLyricsNow = makePillBtn(
+                activity, "🎵 立即同步当前歌曲歌词到眼镜", COL_EMERALD, COL_EMERALD_BRIGHT, 12f);
+        btnSyncLyricsNow.setPadding(dp(activity, 10), dp(activity, 9), dp(activity, 10), dp(activity, 9));
+        LinearLayout.LayoutParams syncLyrLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        syncLyrLp.topMargin = dp(activity, 8);
+        cardSwitches.addView(btnSyncLyricsNow, syncLyrLp);
+        btnSyncLyricsNow.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                swLyrics.setChecked(true, true);
+                CustomAiConfig immediate = CustomAiConfig.load(activity);
+                immediate.syncLyricsToTeleprompter = true;
+                immediate.save(activity);
+                SystemMediaBridge.TrackInfo cur = SystemMediaBridge.getCurrentTrack(activity);
+                final String songLabel = (cur != null && cur.hasSong()) ? cur.formatSongDisplay() : "等待当前播放器曲目";
+                LyricsTeleprompterBridge.syncNow(activity, null);
+                Toast.makeText(activity, "🎤 已触发眼镜提词器歌词同步：" + songLabel, Toast.LENGTH_SHORT).show();
+            }
+        });
 
         // ==================== Card 3: Endpoint & Model ====================
         LinearLayout cardApi = addCardSection(activity, root, "🌐 接口协议与模型配置");
@@ -745,6 +780,7 @@ public final class CustomAiSettingsDialog {
                 cfg.interceptPhoneAskAi = swPhoneAsk.isChecked();
                 cfg.keepLocalHardwareControl = swKeepLocal.isChecked();
                 cfg.passThroughOfficialSkills = swSkills.isChecked();
+                cfg.syncLyricsToTeleprompter = swLyrics.isChecked();
                 cfg.skillRouteTimeoutMs = parseIntSafe(etRouteMs.getText().toString(), 2000);
                 cfg.showFloatingButton = swFloating.isChecked();
                 cfg.showCallToast = swToast.isChecked();
@@ -835,6 +871,7 @@ public final class CustomAiSettingsDialog {
                     swPhoneAsk.setChecked(imported.interceptPhoneAskAi, true);
                     swKeepLocal.setChecked(imported.keepLocalHardwareControl, true);
                     swSkills.setChecked(imported.passThroughOfficialSkills, true);
+                    swLyrics.setChecked(imported.syncLyricsToTeleprompter, true);
                     etRouteMs.setText(String.valueOf(imported.skillRouteTimeoutMs));
                     swFloating.setChecked(imported.showFloatingButton, true);
                     swToast.setChecked(imported.showCallToast, true);
@@ -891,6 +928,7 @@ public final class CustomAiSettingsDialog {
             public void onClick(View v) {
                 collectToConfig.run();
                 cfg.save(activity);
+                LyricsTeleprompterBridge.onConfigChanged(activity);
                 CustomAiFloatingBadge.attachIfEnabled(activity);
                 frame.dialog.dismiss();
                 Toast.makeText(activity,

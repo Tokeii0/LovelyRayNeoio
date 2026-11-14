@@ -165,6 +165,34 @@ public final class SystemMediaBridge {
 
     private static final LinkedList<String> RECENT_SEARCH_PLAYED_KEYS = new LinkedList<>();
     private static final int MAX_RECENT_PLAYED = 8;
+    private static volatile SongHint lastResolvedSongHint;
+
+    public static final class SongHint {
+        public final String platform;
+        public final String songId;
+        public final String songMid;
+        public final String title;
+        public final String artist;
+        public final long timestampMs;
+
+        public SongHint(String platform, String songId, String songMid, String title, String artist) {
+            this.platform = safe(platform);
+            this.songId = safe(songId);
+            this.songMid = safe(songMid);
+            this.title = safe(title);
+            this.artist = safe(artist);
+            this.timestampMs = System.currentTimeMillis();
+        }
+    }
+
+    public static SongHint getLastResolvedSongHint() {
+        return lastResolvedSongHint;
+    }
+
+    public static void recordResolvedSongHint(
+            String platform, String songId, String songMid, String title, String artist) {
+        lastResolvedSongHint = new SongHint(platform, songId, songMid, title, artist);
+    }
 
     private static final Map<String, String> KNOWN_APP_LABELS = new HashMap<>();
     static {
@@ -261,6 +289,8 @@ public final class SystemMediaBridge {
         public String album = "";
         public int playbackState = PlaybackState.STATE_NONE;
         public long positionMs = 0L;
+        public long lastPositionUpdateElapsedMs = 0L;
+        public float playbackSpeed = 1.0f;
         public long durationMs = 0L;
 
         public boolean hasSong() {
@@ -270,6 +300,21 @@ public final class SystemMediaBridge {
         public boolean isPlaying() {
             return playbackState == PlaybackState.STATE_PLAYING
                     || playbackState == PlaybackState.STATE_BUFFERING;
+        }
+
+        public long getInterpolatedPositionMs() {
+            long base = Math.max(0L, positionMs);
+            if (playbackState == PlaybackState.STATE_PLAYING && lastPositionUpdateElapsedMs > 0L) {
+                long delta = SystemClock.elapsedRealtime() - lastPositionUpdateElapsedMs;
+                if (delta > 0L && delta < 300_000L) {
+                    float spd = playbackSpeed > 0f ? playbackSpeed : 1.0f;
+                    base += (long) (delta * spd);
+                }
+            }
+            if (durationMs > 0L && base > durationMs) {
+                base = durationMs;
+            }
+            return base;
         }
 
         public String key() {
@@ -769,6 +814,7 @@ public final class SystemMediaBridge {
             SongCandidate qqHit = searchQqMusicSong(req, beforeKey, null);
             if (qqHit != null) {
                 rememberPlayedCandidate(qqHit);
+                recordResolvedSongHint(PKG_QQMUSIC, "", qqHit.id, qqHit.title, qqHit.artist);
                 String uri = buildQqMusicPlayUri(qqHit.id);
                 TrackInfo after = qqHit.toTrackInfo(PKG_QQMUSIC, "QQ音乐");
                 String reply = "正在通过QQ音乐播放：" + after.formatSongDisplay();
@@ -786,6 +832,7 @@ public final class SystemMediaBridge {
         SongCandidate neHit = searchNetEaseSong(req, beforeKey, null);
         if (neHit != null) {
             rememberPlayedCandidate(neHit);
+            recordResolvedSongHint(PKG_NETEASE, neHit.id, "", neHit.title, neHit.artist);
             String uri = buildNetEaseSongPlayUri(neHit.id);
             TrackInfo after = neHit.toTrackInfo(PKG_NETEASE, "网易云音乐");
             String reply = "正在通过网易云音乐播放：" + after.formatSongDisplay();
@@ -842,6 +889,7 @@ public final class SystemMediaBridge {
             if (PKG_NETEASE.equals(pkg)) {
                 SongCandidate qqHit = searchQqMusicSong(req, "", null);
                 if (qqHit != null) {
+                    recordResolvedSongHint(PKG_QQMUSIC, "", qqHit.id, qqHit.title, qqHit.artist);
                     String qqUri = buildQqMusicPlayUri(qqHit.id);
                     if (tryStartViewUri(ctx, qqUri, PKG_QQMUSIC) || tryStartViewUri(ctx, qqUri, "")) {
                         savePreferredMusicPkg(ctx, PKG_QQMUSIC);
@@ -854,6 +902,7 @@ public final class SystemMediaBridge {
             } else if (PKG_QQMUSIC.equals(pkg)) {
                 SongCandidate neHit = searchNetEaseSong(req, "", null);
                 if (neHit != null) {
+                    recordResolvedSongHint(PKG_NETEASE, neHit.id, "", neHit.title, neHit.artist);
                     String neUri = buildNetEaseSongPlayUri(neHit.id);
                     if (tryStartViewUri(ctx, neUri, PKG_NETEASE) || tryStartViewUri(ctx, neUri, "")) {
                         savePreferredMusicPkg(ctx, PKG_NETEASE);
@@ -1476,6 +1525,8 @@ public final class SystemMediaBridge {
         if (ps != null) {
             ti.playbackState = ps.getState();
             ti.positionMs = ps.getPosition();
+            ti.lastPositionUpdateElapsedMs = ps.getLastPositionUpdateTime();
+            ti.playbackSpeed = ps.getPlaybackSpeed();
         }
 
         MediaMetadata mm = mc.getMetadata();

@@ -1,0 +1,16 @@
+--- orig/o4.smali
++++ patched/o4.smali
+@@ -4172,8 +4172,13 @@
+ .end method
+ 
+ .method public final F(Ljava/lang/String;Ljava/util/Map;)V
+     .registers 20
++
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-05 | Observe RayneoNet BLE events for Lyrics <-> Teleprompter real-time sync] ====================
++    invoke-static/range {p0 .. p2}, Lcom/rayneo/customai/CustomAiHooks;->onRayneoNetEvent(Ljava/lang/Object;Ljava/lang/String;Ljava/util/Map;)V
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-05] ====================
++
+ 
+     move-object/from16 v0, p0
+ 
+     move-object/from16 v1, p1

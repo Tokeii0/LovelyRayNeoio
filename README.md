@@ -1,6 +1,6 @@
 # 👓 LovelyRayNeoio
 
-> 为 **雷鸟 io (`rayneo_io`)** / 雷鸟智能眼镜打造的 **RayNeo AI (`com.rayneo.venus.pub`) 无损自定义大模型接入 + 系统级第三方音乐切歌识曲 + 全量官方技能共存** 自动化补丁工程。
+> 为 **雷鸟 io (`rayneo_io`)** / 雷鸟智能眼镜打造的 **RayNeo AI (`com.rayneo.venus.pub`) 无损自定义大模型接入 + 音乐歌词与眼镜提词器实时联动 + 系统级第三方音乐点歌切歌 + 全量官方技能共存** 自动化补丁工程。
 
 [![Platform](https://img.shields.io/badge/Platform-Android%208.0%2B-3DDC84?logo=android&logoColor=white)](#)
 [![Protocols](https://img.shields.io/badge/OpenAI-%2Fv1%2Fchat%2Fcompletions%20%7C%20%2Fv1%2Fresponses-412991?logo=openai&logoColor=white)](#)
@@ -14,12 +14,16 @@
 雷鸟智能眼镜（尤其是 **雷鸟 io**）自带的语音唤醒（「小雷小雷」）、蓝牙收音（ASR）与原厂语音合成（TTS）体验非常顺滑，但受限于固定云端大模型：
 1. 无法自由切换自己常用的最新前沿模型；
 2. 若简单粗暴地拦截全部对话，会导致 **联网查天气、创建手机待办事项/提醒/倒计时、拍照录像、高德导航** 等官方原生技能失效；
-3. 雷鸟 io 官方云端目前 **不支持控制手机第三方音乐播放器（如网易云音乐、QQ音乐）语音搜歌点播、切歌与读取当前播放曲目**。
+3. 雷鸟 io 官方云端目前 **不支持控制手机第三方音乐播放器（如网易云音乐、QQ音乐）语音搜歌点播、切歌与读取当前播放曲目**，且眼镜自带的 **提词器无法与手机正在播放的音乐歌词联动滚动**。
 
 **LovelyRayNeoio** 采用 `com.rayneo.airuntime` **未混淆桥接层最小侵入拦截方案**，在不破坏原版任何体验的前提下把上述痛点一次性全部打通：
 
 - 🧠 **双协议自定义大模型自由切换**：原生支持 **`/v1/chat/completions`** 与 **`/v1/responses`**（均支持 SSE 流式输出与非流式 JSON），支持思考模型（`reasoning_effort` / `reasoning_content`）、多轮记忆长度调节、自定义请求头与系统提示词，自动注入设备当前本地时间与星期。
 - 🎙️ **100% 保留原版 ASR 与原版 TTS（不断流）**：继续使用雷鸟原生离线唤醒 + 高精度语音识别 + 官方 TTS 音色播报；内置 C++ 云端工作流干净停流与状态信号隔离机制，彻底根治长回复播报 3~4 个字自动断流的问题。
+- 🎤 **眼镜 HUD 音乐歌词与提词器毫秒级实时联动（`LyricsTeleprompterBridge`，新增）**：打通系统 `MediaSession` 播放进度插值、网易云音乐 / QQ音乐毫秒级 `.lrc` 歌词引擎与雷鸟眼镜蓝牙提词器通道（`vb.h.TELEPROMPTER = 0x14` + `GlassesMsg` Protobuf 握手状态机）：
+  - **支持语音与面板一键开关**：直接对眼镜说 **`「打开歌词 / 把歌词投到眼镜上 / 开启提词器歌词联动」`** 或 **`「关闭歌词 / 退出歌词」`**，也可在 `⚡LLM` 面板开启 **「🎤 音乐歌词实时联动眼镜提词器」** 或点击 **「🎵 立即同步当前歌曲歌词到眼镜」**；
+  - **1:1 视觉行宽预排版与精准高亮滚动**：针对雷鸟眼镜提词器 HUD（`420px @ 20sp`）自动按中英文字符宽度预折行并插值时间戳，通过 `0x08 ProgressUpdate` 随歌曲播放实时推进当前高亮行与上下文行，切歌自动换稿、暂停/恢复自动同步；
+  - **无感避让设计**：唤醒「小雷小雷」对话期间自动暂挂歌词推送、不抢蓝牙带宽；在眼镜镜腿触控板手动退出提词器后本首歌不再强弹（切到下一首自动恢复）；若用户正在使用官方原生提词器演讲稿则自动避让绝不冲突。
 - 🎵 **突破官方限制：语音搜歌点播 + 系统级第三方音乐切歌 + 实时曲目抓取（`SystemMediaBridge`）**：直接联动 **网易云音乐 / QQ音乐深度播控协议** 与 Android `MediaSessionManager`（兼容汽水音乐、酷狗、Apple Music、Spotify、哔哩哔哩等）：
   - **🎤 语音直接点歌播放（新增）**：直接对眼镜或手机说 **`「我想听李荣浩的模特」「我想听李荣浩」「放一首周杰伦的晴天」「用QQ音乐放陈奕迅的十年」`**，自动检索正版录音室音源（自动过滤灰色无版权曲目与伴奏/翻唱，单说歌手名时自动避开正在放的歌轮换热曲），先由眼镜语音播报歌名再无感后台拉起播放，不刷屏跳转播放器全屏页、不清空原有播放列表！同时支持 **`「我想听每日推荐 / 放点日推」「打开私人FM」`**；
   - **⏭️ 系统级切歌与播控**：支持语音 **`切歌 / 下一首`、`上一首`、`暂停播放`、`继续播放`、`收藏这首歌`**；
@@ -31,7 +35,7 @@
   - **真实落库的待办/提醒/日程/闹钟**：`提醒我十分钟后喝水`、`定个五分钟倒计时`、`建个待办明天交报告` 真实触发官方 `create_todo` / `set_reminder` 写入雷鸟 App 待办与眼镜提醒；
   - **硬件播控与随身能力**：调音量、调亮度、查电量、拍照/连拍/录像/录音、拨打/接听电话、高德地图路线导航、拍图识物、同声传译、随身记忆全部原样保留。
 - 📱 **手机端内建暗黑配置面板 & 全链路调用审计**：无需反编译改配置，在雷鸟 App 内点击右上角可拖拽 **`⚡LLM` 悬浮球**（或 **连按 3 次音量+**）即可随时改配置、一键测速、剪贴板导入/导出配置，以及在 **「📜 查看调用历史」** 中核验最近 30 次请求的耗时、流式分片与工具调用明细。
-- 🚀 **1 分钟无感升级新版官方 APK**：全部新增逻辑独立编译为追加 `classes{N+1}.dex`，对原包仅在 4 个未混淆桥接类中按语义锚点注入钩子，未来官方更新 APK 时一键重打补丁即可直接覆盖安装。
+- 🚀 **1 分钟无感升级新版官方 APK**：全部新增逻辑独立编译为追加 `classes{N+1}.dex`，对原包仅在 5 个桥接类中按语义锚点注入钩子（`MOD-01 ~ MOD-05`），未来官方更新 APK 时一键重打补丁即可直接覆盖安装。
 
 ---
 
@@ -40,9 +44,9 @@
 ```mermaid
 flowchart TD
     Wake["👓 眼镜唤醒「小雷小雷」 / 📱 手机端 AskAI"] --> ASR["原版高精度 ASR 语音识别 (未改动)"]
-    ASR --> MediaCheck{"🎵 命中音乐点播与系统播控?\n(我想听xxx / 切歌 / 上首 / 暂停 / 什么歌)"}
+    ASR --> MediaCheck{"🎵 命中音乐点播 / 播控 / 歌词联动?\n(我想听xxx / 切歌 / 打开歌词 / 关闭歌词)"}
 
-    MediaCheck -- "是" --> MediaBridge["SystemMediaBridge\n搜歌无感直连播放 (网易云/QQ音乐) + MediaSession 播控\n抓取最新 歌手+歌名+专辑"]
+    MediaCheck -- "是" --> MediaBridge["SystemMediaBridge + LyricsTeleprompterBridge\n搜歌无感直连播放 (网易云/QQ音乐) + MediaSession 播控\nLRC 毫秒级歌词抓取 -> BLE 0x14 眼镜提词器实时滚动"]
     MediaBridge --> OrigTTS["🔊 原版 TTSController 语音播报 + 眼镜 HUD 显示\n播报完毕后再精准拉起/恢复蓝牙音乐焦点"]
 
     MediaCheck -- "否" --> SkillCheck{"🛠️ 命中官方技能 / 实时联网意图?\n或触发 RayClawToolCallInfo?"}
@@ -90,7 +94,7 @@ cd LovelyRayNeoio
   ```
   构建脚本会自动完成：
   1. 编译 `com.rayneo.customai.*` 源码为独立追加 DEX；
-  2. 自动定位目标 DEX 并注入 `MOD-01 ~ MOD-04` 桥接钩子；
+  2. 自动定位目标 DEX 并注入 `MOD-01 ~ MOD-05` 桥接钩子；
   3. 运行 `d8` 跨 DEX 联合字节码与寄存器校验；
   4. 执行 Android 15+ 要求的 `zipalign -P 16`（16KB 页对齐）；
   5. 若本地不存在 `custom_ai_mod/keys/rayneo_custom_ai.jks`，**首次运行会自动调用 `keytool` 生成你本地专属的签名密钥库** 并完成 V1+V2+V3 签名校验，最终在同目录输出 `RayNeo_AI_1.0.20_CustomAI.apk`。
@@ -137,6 +141,7 @@ adb install -r RayNeo_AI_1.0.20_CustomAI.apk
 | **模型名称 (Model)** | 如 `gpt-6-luna`、`gpt-6.1-terra`、`gpt-6-astra`、`gemini-4-hydrogen`、`gemini-4-carbon`、`claude-sonnet-5-5`、`deepseek-flash`、`qwen3.8-flash`、`kimi-k3.1-pro`、`glm-5.3-flash` 等 |
 | **思考强度 (Reasoning Effort)** | 眼镜随身语音建议留空或选 `low`（首字响应更快）；复杂推理问答可选 `medium` / `high` |
 | **官方功能指令交给原版执行** | **建议保持开启（默认开启）**，确保天气、待办提醒、拍照、导航等全部走雷鸟官方真实接口 |
+| **🎤 音乐歌词实时联动眼镜提词器** | 开启后，手机播放音乐时自动抓取网易云音乐 / QQ音乐时间轴歌词并实时滚动投送到眼镜提词器 HUD；也可点击下方 **「🎵 立即同步当前歌曲歌词到眼镜」** 或直接语音说「打开歌词 / 关闭歌词」 |
 | **播报完自动开启下一轮拾音** | 默认关闭（推荐关闭，避免眼镜刚显示完回答就被下一轮收音清屏） |
 
 ### 3. 🌟 各大平台最新模型填写速查表（2026.11 最新梳理）
@@ -175,6 +180,7 @@ adb install -r RayNeo_AI_1.0.20_CustomAI.apk
 
 | 场景分类 | 语音示例 | 实际执行引擎 |
 | :--- | :--- | :--- |
+| **📜 歌词联动眼镜提词器** | 「打开歌词」「把歌词投到眼镜上」「开启提词器歌词联动」「关闭歌词」「退出歌词」 | **本地 `LyricsTeleprompterBridge`**（实时抓取 `.lrc` 歌词并通过 `BLE 0x14` 驱动眼镜提词器逐行高亮同步） |
 | **🎤 语音搜歌点播** | 「我想听李荣浩的模特」「我想听李荣浩」「放一首晴天」「用QQ音乐放陈奕迅的十年」「我想听每日推荐」「打开私人FM」 | **本地 `SystemMediaBridge`**（检索正版曲库 + 播报歌名后无感后台拉起网易云音乐/QQ音乐直播） |
 | **🎵 音乐切歌与播控** | 「切歌」「下一首歌」「切回上一首」「暂停播放」「继续播放」「收藏这首歌」 | **本地 `SystemMediaBridge`**（直接控制网易云音乐/QQ音乐/Spotify 等并播报新歌名） |
 | **🎶 实时识曲与歌曲提问** | 「现在放的是什么歌」「这首歌叫什么」「介绍一下现在放的这首歌」「推荐几首风格差不多的歌」 | **本地曲目抓取 + 自定义大模型**（自动读取当前系统播放曲目注入上下文） |
@@ -200,15 +206,16 @@ LovelyRayNeoio/
 └── custom_ai_mod/
     ├── patch_apk.py                    # 跨平台自动化解包、编译、Smali 注入、D8 校验与重签名主脚本
     ├── annotations/
-    │   └── diffs/                      # 自动生成的 MOD-01 ~ MOD-04 Unified Diff 审计补丁记录
+    │   └── diffs/                      # 自动生成的 MOD-01 ~ MOD-05 Unified Diff 审计补丁记录
     ├── keys/                           # 本地签名证书目录（首次构建自动生成，已加入 .gitignore）
     ├── tools/lib/                      # 内置 baksmali / smali 3.0.9 依赖库
-    ├── stubs/                          # com.rayneo.airuntime 编译期轻量接口桩（不打包进最终 DEX）
+    ├── stubs/                          # airuntime 与 CoreConnect 编译期轻量接口桩（不打包进最终 DEX）
     ├── tests/
-    │   └── TestOpenAiClient.java       # 双协议 SSE/JSON、意图分流、媒体指令与日志模块单元测试
+    │   └── TestOpenAiClient.java       # 双协议 SSE/JSON、意图分流、媒体点歌与歌词提词器协议单元测试
     └── src/com/rayneo/customai/
-        ├── CustomAiHooks.java          # 核心桥接调度器：系统播控 + 三层官方技能分流 + 自定义 LLM 调度
-        ├── SystemMediaBridge.java      # Android MediaSessionManager 第三方播放器控制与实时曲目抓取
+        ├── CustomAiHooks.java          # 核心桥接调度器：系统播控 + 歌词联动 + 三层官方技能分流 + 自定义 LLM
+        ├── LyricsTeleprompterBridge.java# 音乐 LRC 歌词抓取排版引擎 & 眼镜 BLE 提词器握手与毫秒级进度同步驱动
+        ├── SystemMediaBridge.java      # Android MediaSessionManager 第三方播放器控制、语音点歌与实时曲目抓取
         ├── OpenAiApiClient.java        # 零第三方依赖 /v1/chat/completions & /v1/responses 流式客户端
         ├── RayNeoOriginalTtsBridge.java# 复用雷鸟原厂 TTSController 语音播报与防断流看门狗
         ├── CustomAiSettingsDialog.java # 纯自绘主题解耦暗黑配置面板与调用历史查看器
@@ -226,9 +233,7 @@ LovelyRayNeoio/
 修改 Java 代码后，可直接运行内置纯 JVM 单元测试验证双协议 SSE/JSON 解析、思考模型参数规则、混合意图路由与媒体播控匹配逻辑：
 
 ```bash
-javac -encoding UTF-8 -source 8 -target 8 -bootclasspath "$ANDROID_HOME/platforms/android-36/android.jar" -d build_test custom_ai_mod/stubs/com/rayneo/airuntime/*.java custom_ai_mod/stubs/com/rayneo/airuntime/controller/*.java custom_ai_mod/src/com/rayneo/customai/*.java
-javac -encoding UTF-8 -source 8 -target 8 -cp "build_test:$ANDROID_HOME/platforms/android-36/android.jar" -d build_test custom_ai_mod/tests/TestOpenAiClient.java
-java -cp "build_test:$ANDROID_HOME/platforms/android-36/android.jar" TestOpenAiClient
+python -c "import glob,subprocess; st=glob.glob('custom_ai_mod/stubs/**/*.java',recursive=True); sr=glob.glob('custom_ai_mod/src/**/*.java',recursive=True); aj=r'$ANDROID_HOME/platforms/android-36/android.jar'; subprocess.run(['javac','-encoding','UTF-8','-source','8','-target','8','-bootclasspath',aj,'-d','build_test']+st+sr,check=True); subprocess.run(['javac','-encoding','UTF-8','-source','8','-target','8','-cp','build_test:'+aj,'-d','build_test','custom_ai_mod/tests/TestOpenAiClient.java'],check=True); subprocess.run(['java','-cp','build_test:'+aj,'TestOpenAiClient'],check=True)"
 ```
 *(Windows 下将 `-cp` 分隔符 `:` 换为 `;` 即可。)*
 

@@ -41,22 +41,23 @@ flowchart LR
 
 ---
 
-## 二、修改清单与代码标注位置（`MOD-01` ~ `MOD-04`）
+## 二、修改清单与代码标注位置（`MOD-01` ~ `MOD-05`）
 
 全部修改的原始文件、打补丁后文件与 unified diff 均已存档于 [custom_ai_mod/annotations](./custom_ai_mod/annotations)：
 
 | 编号 | 目标类 (原始包路径) | 修改方法与作用 | Diff 文件 |
 | :--- | :--- | :--- | :--- |
-| **MOD-01** | `com.rayneo.venus.VenusApplication` | `onCreate()` 初始化自定义配置与 AskAI 传输模式开关 | [MOD-01_VenusApplication.diff](./custom_ai_mod/annotations/diffs/MOD-01_VenusApplication.diff) |
+| **MOD-01** | `com.rayneo.venus.VenusApplication` | `onCreate()` 初始化自定义配置、歌词提词器桥接引擎与 AskAI 传输模式开关 | [MOD-01_VenusApplication.diff](./custom_ai_mod/annotations/diffs/MOD-01_VenusApplication.diff) |
 | **MOD-02A** | `com.rayneo.venus.MainActivity` | `dispatchKeyEvent()` 监听 **连按 3 次音量+** 打开设置面板 | [MOD-02_MainActivity.diff](./custom_ai_mod/annotations/diffs/MOD-02_MainActivity.diff) |
 | **MOD-02B** | `com.rayneo.venus.MainActivity` | `onResume()` 在应用内挂载可拖拽 `⚡LLM` 悬浮球（支持实时状态显示） | [MOD-02_MainActivity.diff](./custom_ai_mod/annotations/diffs/MOD-02_MainActivity.diff) |
 | **MOD-03A~D** | `com.rayneo.airuntime.controller.AssistantController` | `initWorkflow` / `startWorkflow` / `stopWorkflow` / `destroyWorkflow` 会话生命周期接管与内部停流豁免 | [MOD-03_AssistantController.diff](./custom_ai_mod/annotations/diffs/MOD-03_AssistantController.diff) |
-| **MOD-03E** | `com.rayneo.airuntime.controller.AssistantController` | `nativeOnAsrResult()` 触发自定义 LLM（使用 `invoke-static/range` 兼容高寄存器） | [MOD-03_AssistantController.diff](./custom_ai_mod/annotations/diffs/MOD-03_AssistantController.diff) |
+| **MOD-03E** | `com.rayneo.airuntime.controller.AssistantController` | `nativeOnAsrResult()` 触发自定义 LLM、语音点歌与歌词提词联动（使用 `invoke-static/range` 兼容高寄存器） | [MOD-03_AssistantController.diff](./custom_ai_mod/annotations/diffs/MOD-03_AssistantController.diff) |
 | **MOD-03F~G, I~K** | `com.rayneo.airuntime.controller.AssistantController` | `nativeOnNlpResult` / `DeepThink` / `TtsStatus` / `ResponseComplete` / `Error` 按会话归属分流：官方技能直通时完整放行并记录审计，自定义对话时抑制云端残留 | [MOD-03_AssistantController.diff](./custom_ai_mod/annotations/diffs/MOD-03_AssistantController.diff) |
 | **MOD-03H** | `com.rayneo.airuntime.controller.AssistantController` | `nativeOnRayClawToolCallInfo()` 实时捕获 RayClaw 服务端/客户端工具调用（天气、联网搜索、待办/提醒/日程创建、切歌/音乐、导航、随身记忆等），立即切换至官方原版引擎完整放行 | [MOD-03_AssistantController.diff](./custom_ai_mod/annotations/diffs/MOD-03_AssistantController.diff) |
 | **MOD-03L~P** | `com.rayneo.airuntime.controller.AssistantController` | `nativeOnSpeechStatus` / `VadStatusChange` / `AudioRecordStart` / 重复 `AudioRecordEnd` / `Notify` 过滤，防止眼镜显示 3~4 字后被云端状态关闭或覆盖 | [MOD-03_AssistantController.diff](./custom_ai_mod/annotations/diffs/MOD-03_AssistantController.diff) |
 | **MOD-03Q** | `com.rayneo.airuntime.controller.AssistantController` | `startNextRound()` 扩容 `.registers 1 -> 2`，在 C++ 已停流时自动重新拉起 `startWorkflow()` | [MOD-03_AssistantController.diff](./custom_ai_mod/annotations/diffs/MOD-03_AssistantController.diff) |
 | **MOD-04A~D** | `com.rayneo.airuntime.controller.AskAITask` | `initTask` / `startTask` / `stopTask` / `releaseTask` 接管手机端 Ask AI 对话 | [MOD-04_AskAITask.diff](./custom_ai_mod/annotations/diffs/MOD-04_AskAITask.diff) |
+| **MOD-05** | `com.rayneo.rayneo_venus_sdk_plugin.o4` | `F(String, Map)` 旁路监听 `RayneoNet` 蓝牙事件（`TELEPROMPTER` 握手应答 / 镜腿退出、`fileShareSuccess`、蓝牙重连），配合 `w.t(v0)` 实现音乐 `.lrc` 歌词与眼镜提词器毫秒级滚动同步 | [MOD-05_RayneoNetBridge_o4.diff](./custom_ai_mod/annotations/diffs/MOD-05_RayneoNetBridge_o4.diff) |
 
 汇总差异文件：[ALL_MODIFICATIONS.diff](./custom_ai_mod/annotations/diffs/ALL_MODIFICATIONS.diff)
 

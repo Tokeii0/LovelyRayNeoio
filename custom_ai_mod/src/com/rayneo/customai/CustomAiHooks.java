@@ -209,8 +209,11 @@ public final class CustomAiHooks {
         if (q.isEmpty()) return null;
         String trimmedRaw = rawQuery.trim();
 
-        // Local Android MediaSession commands ("切歌/下一首/上一首/暂停/继续播放/什么歌") are handled
-        // directly by SystemMediaBridge, NOT passed to RayClaw!
+        // Local Android MediaSession commands ("切歌/下一首/上一首/暂停/继续播放/什么歌") and
+        // Lyrics Teleprompter commands ("打开歌词/关闭歌词") are handled locally, NOT passed to RayClaw!
+        if (LyricsTeleprompterBridge.matchVoiceCommand(rawQuery) != 0) {
+            return null;
+        }
         if (SystemMediaBridge.matchCommand(rawQuery) != 0) {
             return null;
         }
@@ -246,6 +249,7 @@ public final class CustomAiHooks {
             appContext = app;
             CustomAiConfig cfg = CustomAiConfig.load(app);
             cfg.syncFlutterAskAiOverride(app);
+            LyricsTeleprompterBridge.init(app);
 
             app.registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
                 @Override
@@ -342,6 +346,7 @@ public final class CustomAiHooks {
                 cancelTurnResources(st, "新对话 startWorkflow");
             }
             resetTurnFlags(st);
+            LyricsTeleprompterBridge.onVoiceSessionActive(true);
 
             // Always return false so nativeStartWorkflow initializes ASR/VAD/OfflineAS/RayClaw
             // (and handles RayNeoWorkflowParamType.TTS broadcast announcements via stock TTS).
@@ -373,6 +378,7 @@ public final class CustomAiHooks {
             } else {
                 RayNeoOriginalTtsBridge.stop();
             }
+            LyricsTeleprompterBridge.onVoiceSessionActive(false);
         } catch (Throwable t) {
             Log.e(TAG, "onAssistantStopWorkflow error", t);
         }
@@ -395,6 +401,7 @@ public final class CustomAiHooks {
                 st.turnSeq.incrementAndGet();
                 cancelTurnResources(st, "销毁会话 destroyWorkflow (" + caller + ")");
             }
+            LyricsTeleprompterBridge.onVoiceSessionActive(false);
         } catch (Throwable t) {
             Log.e(TAG, "onAssistantDestroyWorkflow error", t);
         }
@@ -481,6 +488,27 @@ public final class CustomAiHooks {
             String devModel = st.aiConfig != null ? safeStr(st.aiConfig.getDeviceModel()) : "";
             boolean enableTts = agent != null && agent.getEnableTTS();
             boolean autoNext = agent != null && agent.getAutoNextRound();
+
+            // ===== Lyrics <-> Teleprompter Voice Commands ("打开歌词/关闭歌词/把歌词投到眼镜") =====
+            final int lyricsCmd = LyricsTeleprompterBridge.matchVoiceCommand(cleanQuery);
+            if (lyricsCmd != 0) {
+                st.customTurnActive = true;
+                String actLabel = (lyricsCmd == LyricsTeleprompterBridge.CMD_ENABLE_SYNC)
+                        ? "开启歌词提词联动" : "关闭歌词提词联动";
+                final long lyrLogId = CustomAiCallLog.startSystemMediaCall(
+                        app, "🎤 眼镜歌词 [" + actLabel + "]", cleanQuery, devModel, enableTts, autoNext);
+                st.activeLogId = lyrLogId;
+                maybeShowCallToast(app, cfg, "🎤 " + actLabel, "Teleprompter");
+                stopNativeWorkflowCleanly(ctrl, st, lyrLogId);
+
+                EXECUTOR.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        executeLyricsTeleprompterVoiceTurn(ctrl, st, seq, cleanQuery, safeSid, lyricsCmd, lyrLogId);
+                    }
+                });
+                return;
+            }
 
             // ===== System Media Control & Active Song Grabber (切歌/上一首/暂停/继续播放/正在放什么歌) =====
             final int mediaAction = SystemMediaBridge.matchCommand(cleanQuery);
@@ -792,6 +820,7 @@ public final class CustomAiHooks {
             finalMsg = "↪ [官方技能执行完成]";
         }
         CustomAiCallLog.finishSuccess(appContext, lid, finalMsg);
+        LyricsTeleprompterBridge.onVoiceSessionActive(false);
     }
 
     private static boolean isOfficialSkillResult(NlpResult r) {
@@ -1073,6 +1102,8 @@ public final class CustomAiHooks {
                                 if (st.activeLogId == logId) {
                                     st.activeLogId = 0L;
                                 }
+                                LyricsTeleprompterBridge.onVoiceSessionActive(false);
+                                LyricsTeleprompterBridge.notifyMediaChanged();
                                 final boolean hasDeferredUri = !safeStr(res.deferredLaunchUri).isEmpty();
                                 if (hasDeferredUri && MAIN_HANDLER != null) {
                                     // Launch NetEase/QQ Music deep link 160ms AFTER Glasses TTS finishes
@@ -1084,6 +1115,7 @@ public final class CustomAiHooks {
                                                 @Override
                                                 public void run() {
                                                     boolean launched = SystemMediaBridge.launchDeferredUri(app, res, logId);
+                                                    LyricsTeleprompterBridge.notifyMediaChanged();
                                                     CustomAiCallLog.finishSuccess(app, logId,
                                                             reply + " [" + res.debugTrace + ", launched=" + launched + "]");
                                                 }
@@ -1181,6 +1213,7 @@ public final class CustomAiHooks {
 
         if (!cfg.hasApiKey() && !isCustomAuthProvided(cfg.customHeadersJson)) {
             final String hint = "未配置自定义 API Key。请在手机雷鸟 App 点击 ⚡LLM（或连按 3 次音量+）填写 API Key 后重试。";
+            LyricsTeleprompterBridge.onVoiceSessionActive(false);
             CustomAiCallLog.finishError(app, logId, "未配置 API Key");
             emitGated(gate, new Runnable() {
                 @Override
@@ -1296,10 +1329,11 @@ public final class CustomAiHooks {
                             new RayNeoOriginalTtsBridge.CompletionCallback() {
                                 @Override
                                 public void onComplete(boolean playedNormally) {
-                                    if (st.activeLogId == logId) {
-                                        st.activeLogId = 0L;
-                                    }
-                                    if (st.turnSeq.get() != seq || cancel.isCancelled()) {
+                                     if (st.activeLogId == logId) {
+                                         st.activeLogId = 0L;
+                                     }
+                                     LyricsTeleprompterBridge.onVoiceSessionActive(false);
+                                     if (st.turnSeq.get() != seq || cancel.isCancelled()) {
                                         if (!st.handledByLocalSkill) {
                                             CustomAiCallLog.finishInterrupted(app, logId, "播报期间被新操作打断");
                                         }
@@ -1343,6 +1377,7 @@ public final class CustomAiHooks {
                 return;
             }
             Log.e(TAG, "Custom LLM error (glasses)", err);
+            LyricsTeleprompterBridge.onVoiceSessionActive(false);
             final String errText = "请求自定义 AI 失败：" + safeStr(err.getMessage());
             CustomAiCallLog.finishError(app, logId, errText);
             if (st.activeLogId == logId) st.activeLogId = 0L;
@@ -1393,6 +1428,52 @@ public final class CustomAiHooks {
 
             final String query = safeStr(params.getText());
 
+            // Direct Lyrics <-> Teleprompter commands inside Phone AskAI ("打开歌词/关闭歌词")
+            final int lyricsCmd = LyricsTeleprompterBridge.matchVoiceCommand(query);
+            if (lyricsCmd != 0) {
+                final String dialogId = safeStr(params.getDialogId());
+                final int round = ASK_AI_ROUNDS.getOrDefault(task, 0) + 1;
+                ASK_AI_ROUNDS.put(task, round);
+                final String roundId = "lyrics_" + System.currentTimeMillis();
+                String actLabel = (lyricsCmd == LyricsTeleprompterBridge.CMD_ENABLE_SYNC)
+                        ? "开启歌词提词联动" : "关闭歌词提词联动";
+                final long lyrLogId = CustomAiCallLog.startSystemMediaCall(
+                        app, "🎤 手机 AskAI [" + actLabel + "]", query, "PhoneApp", false, false);
+                EXECUTOR.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        final long startMs = SystemClock.uptimeMillis();
+                        postToNativeCb(new Runnable() {
+                            @Override
+                            public void run() {
+                                listener.onStartResult(true, "ok");
+                            }
+                        });
+                        final String reply = LyricsTeleprompterBridge.executeVoiceCommand(app, lyricsCmd, lyrLogId);
+                        CustomAiCallLog.onTextDelta(lyrLogId, reply);
+                        CustomAiCallLog.finishSuccess(app, lyrLogId, reply);
+                        ConversationMemory.appendTurn("ask_" + dialogId, query, reply, cfg.maxHistoryTurns);
+                        final long elapsed = SystemClock.uptimeMillis() - startMs;
+                        postToNativeCb(new Runnable() {
+                            @Override
+                            public void run() {
+                                listener.onAskAiResponse(buildAskAiResp(
+                                        RayNeoAskAIResponseEventType.TEXT_DELTA,
+                                        dialogId, query, reply, null, false, round, roundId, "LyricsPrompter", elapsed));
+                                listener.onAskAiResponse(buildAskAiResp(
+                                        RayNeoAskAIResponseEventType.FINISHED,
+                                        dialogId, query, "", null, true, round, roundId, "LyricsPrompter", elapsed));
+                                listener.onAskAiResponse(buildAskAiResp(
+                                        RayNeoAskAIResponseEventType.COMPLETED,
+                                        dialogId, query, "", null, true, round, roundId, "LyricsPrompter", elapsed));
+                                listener.onResponseComplete();
+                            }
+                        });
+                    }
+                });
+                return true;
+            }
+
             // Direct SystemMediaBridge support inside Phone AskAI ("切歌/上一首/暂停/继续播放/正在播放什么歌")
             final int mediaAction = SystemMediaBridge.matchCommand(query);
             if (mediaAction != 0) {
@@ -1429,6 +1510,7 @@ public final class CustomAiHooks {
                                                 public void run() {
                                                     SystemMediaBridge.enforcePostAnnouncementState(
                                                             app, mediaAction, res.targetPackage, mediaLogId);
+                                                    LyricsTeleprompterBridge.notifyMediaChanged();
                                                 }
                                             });
                                         }
@@ -1436,6 +1518,7 @@ public final class CustomAiHooks {
                                 }
                             }
                         }
+                        LyricsTeleprompterBridge.notifyMediaChanged();
                         final String reply = res.spokenReply;
                         CustomAiCallLog.onTextDelta(mediaLogId, reply);
                         CustomAiCallLog.finishSuccess(app, mediaLogId, reply + " [" + trace + "]");
@@ -1901,6 +1984,84 @@ public final class CustomAiHooks {
             }
         } catch (Throwable ignored) {}
         MAIN_HANDLER.post(r);
+    }
+
+    private static void executeLyricsTeleprompterVoiceTurn(
+            final AssistantController ctrl,
+            final SessionState st,
+            final int seq,
+            final String query,
+            final String sessionId,
+            final int lyricsCmd,
+            final long logId
+    ) {
+        final AiResultListener listener = st.listener;
+        final RayNeoAiConfig aiConfig = st.aiConfig;
+        final Application app = appContext;
+        if (listener == null || app == null) {
+            LyricsTeleprompterBridge.onVoiceSessionActive(false);
+            CustomAiCallLog.finishError(app, logId, "监听器或上下文为空");
+            return;
+        }
+        final CustomAiConfig cfg = CustomAiConfig.load(app);
+        AiAgentConfig agent = aiConfig != null ? aiConfig.getAiAgentConfig() : null;
+        final String dialogId = safeStr(agent != null ? agent.getDialogId() : null);
+        final boolean enableTts = agent != null && agent.getEnableTTS();
+        final boolean autoNextRound = agent != null && agent.getAutoNextRound();
+        final boolean allowAutoNext = autoNextRound && cfg.autoContinueAfterTts;
+
+        final String reply = LyricsTeleprompterBridge.executeVoiceCommand(app, lyricsCmd, logId);
+        CustomAiCallLog.onTextDelta(logId, reply);
+        ConversationMemory.appendTurn(dialogId, query, reply, cfg.maxHistoryTurns);
+
+        postToNativeCb(new Runnable() {
+            @Override
+            public void run() {
+                if (st.turnSeq.get() != seq) return;
+                listener.onSpeechStatus(SpeechStatus.RESPONDING);
+                listener.onNlpResult(buildNlpResult(dialogId, sessionId, query, reply, true, allowAutoNext, seq));
+                listener.onResponseComplete();
+
+                final RayNeoOriginalTtsBridge.CompletionCallback onTtsDone =
+                        new RayNeoOriginalTtsBridge.CompletionCallback() {
+                            @Override
+                            public void onComplete(boolean playedNormally) {
+                                if (st.activeLogId == logId) {
+                                    st.activeLogId = 0L;
+                                }
+                                LyricsTeleprompterBridge.onVoiceSessionActive(false);
+                                CustomAiCallLog.finishSuccess(app, logId, reply);
+                                if (playedNormally && allowAutoNext && ctrl != null && MAIN_HANDLER != null) {
+                                    Runnable nextTask = new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            if (st.turnSeq.get() != seq) return;
+                                            try {
+                                                ctrl.startNextRound();
+                                            } catch (Throwable ignored) {}
+                                        }
+                                    };
+                                    st.pendingNextRoundTask = nextTask;
+                                    MAIN_HANDLER.postDelayed(nextTask, AUTO_NEXT_ROUND_DELAY_MS);
+                                }
+                            }
+                        };
+
+                if (enableTts && !reply.isEmpty()) {
+                    RayNeoOriginalTtsBridge.speak(aiConfig, reply, sessionId, logId, listener, onTtsDone);
+                } else {
+                    onTtsDone.onComplete(false);
+                }
+            }
+        });
+    }
+
+    // ==================== MOD-05: RayneoNet BLE Event Tap ====================
+
+    public static void onRayneoNetEvent(Object bridge, String eventName, Map data) {
+        try {
+            LyricsTeleprompterBridge.onRayneoNetEvent(bridge, eventName, data);
+        } catch (Throwable ignored) {}
     }
 
     private static String safeStr(String s) {
