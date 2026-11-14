@@ -5,6 +5,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Android%208.0%2B-3DDC84?logo=android&logoColor=white)](#)
 [![Protocols](https://img.shields.io/badge/OpenAI-%2Fv1%2Fchat%2Fcompletions%20%7C%20%2Fv1%2Fresponses-412991?logo=openai&logoColor=white)](#)
 [![Target](https://img.shields.io/badge/Tested%20Base-RayNeo%20AI%20v1.0.20-00B4D8)](#)
+[![License](https://img.shields.io/badge/License-AGPLv3%20%2B%20Commons%20Clause%20(%E7%A6%81%E6%AD%A2%E6%94%B6%E8%B4%B9%C2%B7%E5%BC%BA%E5%88%B6%E5%BC%80%E6%BA%90)-E63946)](./LICENSE)
 
 ---
 
@@ -165,6 +166,7 @@ adb install -r RayNeo_AI_1.0.20_CustomAI.apk
 
 ```text
 LovelyRayNeoio/
+├── LICENSE                             # AGPLv3 + Commons Clause 协议（严禁收费 · 强制开源）
 ├── README.md                           # 项目说明、构建安装与使用文档
 ├── MODIFICATION_GUIDE.md               # 逆向架构细节与注入点技术规范说明
 ├── upgrade_apk.bat                     # Windows 拖拽 APK 一键打补丁脚本
@@ -202,6 +204,15 @@ javac -encoding UTF-8 -source 8 -target 8 -cp "build_test:$ANDROID_HOME/platform
 java -cp "build_test:$ANDROID_HOME/platforms/android-36/android.jar" TestOpenAiClient
 ```
 *(Windows 下将 `-cp` 分隔符 `:` 换为 `;` 即可。)*
+
+---
+
+## 📜 开源协议（严禁收费 · 强制开源）
+
+本项目采用 **[GNU AGPLv3 + Commons Clause v1.0（禁止商用收费附加条款）](./LICENSE)** 授权：
+
+- 🚫 **严禁任何形式收费（No Charging / Non-Commercial）**：严禁出售本项目源码、脚本或打包后的修改版 APK；严禁在闲鱼、淘宝、拼多多、付费群、知识星球等任何渠道以「代改费、安装指导费、激活码/卡密、赞助下载门槛、硬件捆绑溢价」等任何名义变相牟利。若你在任何地方看到有人收费售卖本项目产物，请直接举报并认准本免费开源仓库。
+- 🔓 **强制完整开源（Mandatory Open-Source / Strong Copyleft）**：任何基于本项目的修改、二次开发、衍生版本、重新打包分发或云端网络服务，**必须同样免费向所有用户完整公开修改后的全部源代码与构建脚本**，并完整保留本协议与原作者署名，严禁闭源二改。
 
 ---
 
