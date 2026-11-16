@@ -107,6 +107,10 @@ public final class CustomAiHooks {
                     + "|我刚才放哪|我之前说过|查找我的记忆|搜索我的记忆)",
             Pattern.CASE_INSENSITIVE);
 
+    private static final Pattern PAT_CUSTOM_SKILL_FASTLANE = Pattern.compile(
+            "(提词器|投到眼镜|推到眼镜|发到眼镜|显示到眼镜|放到眼镜|剪贴板|粘贴板|调用mcp|用mcp)",
+            Pattern.CASE_INSENSITIVE);
+
     private static volatile Application appContext;
     private static volatile String lastSessionUuid = "";
     private static final ExecutorService EXECUTOR = Executors.newCachedThreadPool();
@@ -209,12 +213,16 @@ public final class CustomAiHooks {
         if (q.isEmpty()) return null;
         String trimmedRaw = rawQuery.trim();
 
-        // Local Android MediaSession commands ("切歌/下一首/上一首/暂停/继续播放/什么歌") and
-        // Lyrics Teleprompter commands ("打开歌词/关闭歌词") are handled locally, NOT passed to RayClaw!
+        // Local Android MediaSession commands ("切歌/下一首/上一首/暂停/继续播放/什么歌"),
+        // Lyrics Teleprompter commands ("打开歌词/双语歌词/打开罗马音/关闭歌词"), and Custom Skill
+        // fast-lane intents ("投到眼镜提词器/剪贴板/MCP") are handled locally, NOT passed to RayClaw!
         if (LyricsTeleprompterBridge.matchVoiceCommand(rawQuery) != 0) {
             return null;
         }
         if (SystemMediaBridge.matchCommand(rawQuery) != 0) {
+            return null;
+        }
+        if (PAT_CUSTOM_SKILL_FASTLANE.matcher(q).find() || PAT_CUSTOM_SKILL_FASTLANE.matcher(trimmedRaw).find()) {
             return null;
         }
         if (PAT_RADIO_PODCAST.matcher(q).find() || PAT_RADIO_PODCAST.matcher(trimmedRaw).find()) {
@@ -489,12 +497,11 @@ public final class CustomAiHooks {
             boolean enableTts = agent != null && agent.getEnableTTS();
             boolean autoNext = agent != null && agent.getAutoNextRound();
 
-            // ===== Lyrics <-> Teleprompter Voice Commands ("打开歌词/关闭歌词/把歌词投到眼镜") =====
+            // ===== Lyrics <-> Teleprompter Voice Commands ("打开歌词/双语歌词/打开罗马音/关闭歌词") =====
             final int lyricsCmd = LyricsTeleprompterBridge.matchVoiceCommand(cleanQuery);
             if (lyricsCmd != 0) {
                 st.customTurnActive = true;
-                String actLabel = (lyricsCmd == LyricsTeleprompterBridge.CMD_ENABLE_SYNC)
-                        ? "开启歌词提词联动" : "关闭歌词提词联动";
+                String actLabel = LyricsTeleprompterBridge.voiceCommandActionLabel(lyricsCmd);
                 final long lyrLogId = CustomAiCallLog.startSystemMediaCall(
                         app, "🎤 眼镜歌词 [" + actLabel + "]", cleanQuery, devModel, enableTts, autoNext);
                 st.activeLogId = lyrLogId;
@@ -551,6 +558,24 @@ public final class CustomAiHooks {
                     );
                     st.activeSkillLogId = skillLogId;
                     Log.i(TAG, "Tier-A direct official pass-through [" + skillCategory + "]: " + cleanQuery);
+                    return;
+                }
+
+                // ===== Fast-Lane for Custom Skills / MCP ("投到眼镜提词器 / 剪贴板 / MCP") =====
+                if (cfg.enableMcpAndSkills && PAT_CUSTOM_SKILL_FASTLANE.matcher(cleanQuery).find()) {
+                    st.customTurnActive = true;
+                    final long logId = CustomAiCallLog.startCall(
+                            app, "👓 眼镜语音 [Skill/MCP]", cfg, cleanQuery, devModel, enableTts, autoNext);
+                    st.activeLogId = logId;
+                    CustomAiCallLog.addEvent(logId, "FASTLANE_CUSTOM_SKILL_MCP");
+                    maybeShowCallToast(app, cfg, "🧩 眼镜 Skill/MCP", cfg.model);
+                    stopNativeWorkflowCleanly(ctrl, st, logId);
+                    EXECUTOR.execute(new Runnable() {
+                        @Override
+                        public void run() {
+                            executeAssistantTurn(ctrl, st, seq, cleanQuery, safeSid, logId, null);
+                        }
+                    });
                     return;
                 }
 
@@ -1246,6 +1271,7 @@ public final class CustomAiHooks {
                     ConversationMemory.getHistory(dialogId, cfg.maxHistoryTurns);
 
             OpenAiApiClient.EndpointConfig ep = cfg.toEndpointConfig();
+            ep.toolExecutor = McpSkillManager.createExecutor(app, cfg, logId);
             String mediaHint = SystemMediaBridge.buildPromptContextLine(app);
             if (!mediaHint.isEmpty()) {
                 ep.extraContextHint = mediaHint;
@@ -1435,8 +1461,7 @@ public final class CustomAiHooks {
                 final int round = ASK_AI_ROUNDS.getOrDefault(task, 0) + 1;
                 ASK_AI_ROUNDS.put(task, round);
                 final String roundId = "lyrics_" + System.currentTimeMillis();
-                String actLabel = (lyricsCmd == LyricsTeleprompterBridge.CMD_ENABLE_SYNC)
-                        ? "开启歌词提词联动" : "关闭歌词提词联动";
+                String actLabel = LyricsTeleprompterBridge.voiceCommandActionLabel(lyricsCmd);
                 final long lyrLogId = CustomAiCallLog.startSystemMediaCall(
                         app, "🎤 手机 AskAI [" + actLabel + "]", query, "PhoneApp", false, false);
                 EXECUTOR.execute(new Runnable() {
@@ -1681,6 +1706,7 @@ public final class CustomAiHooks {
             if (extraHints.length() > 0) {
                 ep.extraContextHint = extraHints.toString();
             }
+            ep.toolExecutor = McpSkillManager.createExecutor(appContext, cfg, logId);
             List<ConversationMemory.Message> history =
                     ConversationMemory.getHistory("ask_" + dialogId, cfg.maxHistoryTurns);
 

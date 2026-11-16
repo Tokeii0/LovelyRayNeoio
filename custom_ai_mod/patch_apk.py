@@ -16,6 +16,7 @@ import difflib
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import zipfile
@@ -40,17 +41,27 @@ def _find_jdk_tool(name: str) -> Path:
     candidates: list[Path] = []
     if env_home:
         candidates.append(Path(env_home) / "bin" / exe)
-    which_hit = shutil.which(exe) or shutil.which(name)
-    if which_hit:
-        candidates.append(Path(which_hit))
+    if sys.platform == "darwin":
+        for brew_root in [Path("/opt/homebrew/opt"), Path("/usr/local/opt")]:
+            if brew_root.exists():
+                for sub in sorted(brew_root.glob("openjdk*"), reverse=True):
+                    candidates.append(sub / "libexec" / "openjdk.jdk" / "Contents" / "Home" / "bin" / exe)
+                    candidates.append(sub / "bin" / exe)
+        for jvm_base in [Path("/Library/Java/JavaVirtualMachines"), Path.home() / "Library/Java/JavaVirtualMachines"]:
+            if jvm_base.exists():
+                for sub in sorted(jvm_base.glob("*"), reverse=True):
+                    candidates.append(sub / "Contents" / "Home" / "bin" / exe)
     if IS_WIN:
         for base in [Path(r"C:\Program Files\OpenLogic"), Path(r"C:\Program Files\Eclipse Adoptium"), Path(r"C:\Program Files\Java")]:
             if base.exists():
                 for sub in sorted(base.glob("jdk*"), reverse=True):
                     candidates.append(sub / "bin" / exe)
+    which_hit = shutil.which(exe) or shutil.which(name)
+    if which_hit:
+        candidates.append(Path(which_hit))
     for c in candidates:
         if c.exists():
-            return c
+            return c.resolve()
     return Path(exe)
 
 
@@ -63,6 +74,7 @@ def _find_android_sdk() -> Path:
         Path(r"D:\dev\android-sdk"),
         Path(os.environ.get("LOCALAPPDATA", "")) / "Android" / "Sdk" if IS_WIN else Path.home() / "Android" / "Sdk",
         Path.home() / "Library" / "Android" / "sdk",
+        Path.home() / "android-sdk",
     ]
     for fb in fallbacks:
         if fb and fb.exists():
@@ -90,18 +102,22 @@ APKSIGNER_BAT = BUILD_TOOLS / ("apksigner.bat" if IS_WIN else "apksigner")
 MIN_API = "26"
 MIN_SDK_CHECK = "26"
 
-TARGET_CLASSES = {
+STATIC_TARGET_CLASSES = {
     "MOD-01": ("com/rayneo/venus/VenusApplication.smali", "VenusApplication"),
     "MOD-02": ("com/rayneo/venus/MainActivity.smali", "MainActivity"),
     "MOD-03": ("com/rayneo/airuntime/controller/AssistantController.smali", "AssistantController"),
     "MOD-04": ("com/rayneo/airuntime/controller/AskAITask.smali", "AskAITask"),
-    "MOD-05": ("com/rayneo/rayneo_venus_sdk_plugin/o4.smali", "RayneoNetBridge_o4"),
 }
 
 
 def run_cmd(cmd: list[str], cwd: Path | None = None, capture: bool = False) -> subprocess.CompletedProcess:
     use_shell = cmd[0].lower().endswith(".bat") or cmd[0].lower().endswith(".cmd")
     print(f"[CMD] {' '.join(cmd)}")
+    env = os.environ.copy()
+    if JAVA_EXE.exists() and JAVA_EXE.parent.name == "bin":
+        jdk_home = str(JAVA_EXE.parent.parent)
+        env.setdefault("JAVA_HOME", jdk_home)
+        env["PATH"] = f"{JAVA_EXE.parent}{os.pathsep}{env.get('PATH', '')}"
     proc = subprocess.run(
         cmd,
         cwd=str(cwd) if cwd else None,
@@ -110,6 +126,7 @@ def run_cmd(cmd: list[str], cwd: Path | None = None, capture: bool = False) -> s
         capture_output=capture,
         encoding="utf-8",
         errors="replace",
+        env=env,
     )
     if proc.returncode != 0:
         if capture:
@@ -251,11 +268,23 @@ def replace_in_method(text: str, method_sig_regex: str, anchor_regex: str, snipp
     return text[:m_method.start()] + new_body + text[m_method.end():]
 
 
-def patch_venus_application(src: str) -> str:
+def patch_venus_application(src: str, bridge_dot_name: str = "com.rayneo.rayneo_venus_sdk_plugin.o4") -> str:
+    m_oc = re.search(r"(\.method [^\n]*onCreate\(\)V[\s\S]*?\.end method)", src)
+    if m_oc:
+        oc_body = m_oc.group(1)
+        if re.search(r"^\s*\.registers\s+1\b", oc_body, flags=re.MULTILINE):
+            oc_body = re.sub(r"^(\s*\.registers\s+)1\b", r"\g<1>2", oc_body, count=1, flags=re.MULTILINE)
+            src = src[:m_oc.start()] + oc_body + src[m_oc.end():]
     block = wrap_block(
         "MOD-01",
         "Init CustomAI on App Start",
-        "    invoke-static/range {p0 .. p0}, Lcom/rayneo/customai/CustomAiHooks;->onAppCreate(Landroid/app/Application;)V",
+        "\n".join(
+            [
+                f'    const-string v0, "{bridge_dot_name}"',
+                "    invoke-static {v0}, Lcom/rayneo/customai/LyricsTeleprompterBridge;->registerBridgeClassName(Ljava/lang/String;)V",
+                "    invoke-static/range {p0 .. p0}, Lcom/rayneo/customai/CustomAiHooks;->onAppCreate(Landroid/app/Application;)V",
+            ]
+        ),
     )
     return replace_in_method(
         src,
@@ -586,9 +615,19 @@ def patch_ask_ai_task(src: str) -> str:
     return out
 
 
-def patch_rayneo_net_bridge(src: str) -> str:
-    # MOD-05: Tap RayneoNet incoming BLE events (TELEPROMPTER responses, fileShareSuccess, BT state)
-    # Intercepts LYRICS_SLOT_DID events (returns true -> early return) so official Flutter never throws Manuscript missing!
+def patch_rayneo_net_bridge(src: str, bridge_desc: str = "Lcom/rayneo/rayneo_venus_sdk_plugin/o4;") -> str:
+    # MOD-05: Dynamically find event sink method (String, Map)V containing "onRNAnalyticsEvent"
+    evt_method_name = None
+    for m in re.finditer(
+        r"(\.method public final ([a-zA-Z0-9_]+)\(Ljava/lang/String;Ljava/util/Map;\)V[\s\S]*?\.end method)",
+        src,
+    ):
+        if '"onRNAnalyticsEvent"' in m.group(1):
+            evt_method_name = m.group(2)
+            break
+    if not evt_method_name:
+        raise RuntimeError(f"Could not locate event sink (String, Map)V method on {bridge_desc}")
+
     block_5 = wrap_block(
         "MOD-05",
         "Observe & intercept RayneoNet BLE events for Lyrics <-> Teleprompter real-time sync",
@@ -604,13 +643,22 @@ def patch_rayneo_net_bridge(src: str) -> str:
     )
     out = replace_in_method(
         src,
-        r"public final F\(Ljava/lang/String;Ljava/util/Map;\)V",
+        rf"public final {re.escape(evt_method_name)}\(Ljava/lang/String;Ljava/util/Map;\)V",
         r"^\s*\.(?:registers|locals)\s+\d+",
         block_5,
-        "MOD-05 o4.F(eventName, data)",
+        f"MOD-05 {bridge_desc}->{evt_method_name}(eventName, data)",
     )
 
-    # MOD-05B: Tap RayneoNet low-level packet logger o4.l(o4, dir, event, summary, meta, rawBytes, decoded, mask)
+    # MOD-05B: Dynamically find low-level packet logger static (<Bridge>, String, String, String, Map, [B, String, I)V
+    esc_desc = re.escape(bridge_desc)
+    m_trace = re.search(
+        rf"\.method public static ([a-zA-Z0-9_]+)\({esc_desc}Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;\[BLjava/lang/String;I\)V",
+        out,
+    )
+    if not m_trace:
+        raise RuntimeError(f"Could not locate low-level packet trace method on {bridge_desc}")
+    trace_method_name = m_trace.group(1)
+
     block_5b = wrap_block(
         "MOD-05B",
         "Observe RayneoNet low-level outbound/inbound frames & errors",
@@ -618,10 +666,10 @@ def patch_rayneo_net_bridge(src: str) -> str:
     )
     return replace_in_method(
         out,
-        r"public static l\(Lcom/rayneo/rayneo_venus_sdk_plugin/o4;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;\[BLjava/lang/String;I\)V",
+        rf"public static {re.escape(trace_method_name)}\({esc_desc}Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;\[BLjava/lang/String;I\)V",
         r"^\s*\.(?:registers|locals)\s+\d+",
         block_5b,
-        "MOD-05B o4.l(bridge, dir, event, summary, meta, rawBytes, ...)",
+        f"MOD-05B {bridge_desc}->{trace_method_name}(bridge, dir, event, summary, meta, rawBytes, ...)",
     )
 
 
@@ -631,13 +679,13 @@ def locate_target_dex(apk_path: Path) -> tuple[list[str], str]:
             [n for n in zf.namelist() if re.fullmatch(r"classes\d*\.dex", n)],
             key=lambda s: 1 if s == "classes.dex" else int(s[7:-4]),
         )
-        # Heuristic: look for descriptor string inside raw DEX bytes
+        # Heuristic: look for descriptor string or RayneoNetBridge anchor string inside raw DEX bytes
         markers = [
             b"Lcom/rayneo/venus/VenusApplication;",
             b"Lcom/rayneo/venus/MainActivity;",
             b"Lcom/rayneo/airuntime/controller/AssistantController;",
             b"Lcom/rayneo/airuntime/controller/AskAITask;",
-            b"Lcom/rayneo/rayneo_venus_sdk_plugin/o4;",
+            b"netproxy_http_request_finished",
         ]
         found = []
         for dn in dex_names:
@@ -651,6 +699,213 @@ def locate_target_dex(apk_path: Path) -> tuple[list[str], str]:
         new_dex_name = f"classes{next_idx}.dex"
         print(f"[OK] Existing DEX count={len(dex_names)} (last={last}), target DEX(es)={found}, new DEX={new_dex_name}")
         return found, new_dex_name
+
+
+def discover_rayneo_net_bridge_smali(smali_dirs: dict[str, Path]) -> tuple[str, str, str, str]:
+    """Scans baksmali directories to dynamically locate RayneoNetBridge regardless of R8 class renaming."""
+    hits: list[tuple[str, Path]] = []
+    for dn, sdir in smali_dirs.items():
+        plugin_dir = sdir / "com" / "rayneo" / "rayneo_venus_sdk_plugin"
+        if not plugin_dir.exists():
+            continue
+        for cand in sorted(plugin_dir.glob("*.smali")):
+            if "$" in cand.name:
+                continue
+            txt = cand.read_text(encoding="utf-8", errors="ignore")
+            if '"onRNAnalyticsEvent"' in txt and '"netproxy_http_request_finished"' in txt and '"businessId"' in txt:
+                hits.append((dn, cand))
+    if len(hits) != 1:
+        raise RuntimeError(f"Expected exactly 1 RayneoNetBridge class in rayneo_venus_sdk_plugin, found {len(hits)}: {hits}")
+    dn, cand = hits[0]
+    rel_path = cand.relative_to(smali_dirs[dn]).as_posix()
+    no_ext = rel_path[:-6]  # strip .smali
+    dot_name = no_ext.replace("/", ".")
+    desc = f"L{no_ext};"
+    short_name = f"RayneoNetBridge_{cand.stem}"
+    print(f"[OK] Dynamically discovered RayneoNetBridge: {dn}:{rel_path} ({dot_name})")
+    return rel_path, short_name, dot_name, desc
+
+
+_OBJECT_METHODS = {
+    ("equals", "(Ljava/lang/Object;)Z"),
+    ("hashCode", "()I"),
+    ("toString", "()Ljava/lang/String;"),
+    ("getClass", "()Ljava/lang/Class;"),
+    ("notify", "()V"),
+    ("notifyAll", "()V"),
+    ("wait", "()V"),
+    ("wait", "(J)V"),
+    ("wait", "(JI)V"),
+    ("clone", "()Ljava/lang/Object;"),
+    ("finalize", "()V"),
+    ("<init>", "()V"),
+}
+
+
+def verify_apk_dex_symbol_links(apk_path: Path, custom_dex_name: str) -> None:
+    """Hierarchy-aware cross-DEX symbol link verifier: ensures 0 missing classes/fields/methods at runtime."""
+    all_classes: dict[str, tuple[str | None, list[str]]] = {}
+    all_fields: set[tuple[str, str, str]] = set()
+    all_methods: set[tuple[str, str, str]] = set()
+    custom_refs: tuple[set[str], set[tuple[str, str, str]], set[tuple[str, str, str]]] | None = None
+
+    with zipfile.ZipFile(apk_path, "r") as zf:
+        dex_names = sorted(
+            [n for n in zf.namelist() if re.fullmatch(r"classes\d*\.dex", n)],
+            key=lambda s: 1 if s == "classes.dex" else int(s[7:-4]),
+        )
+        for dn in dex_names:
+            data = zf.read(dn)
+            (
+                str_sz, str_off, type_sz, type_off, proto_sz, proto_off,
+                field_sz, field_off, meth_sz, meth_off, cls_sz, cls_off,
+            ) = struct.unpack_from("<12I", data, 56)
+
+            def read_uleb(pos: int) -> tuple[int, int]:
+                res, shift = 0, 0
+                while True:
+                    b = data[pos]
+                    pos += 1
+                    res |= (b & 0x7F) << shift
+                    if not (b & 0x80):
+                        break
+                    shift += 7
+                return res, pos
+
+            strings: list[str] = []
+            for i in range(str_sz):
+                (off,) = struct.unpack_from("<I", data, str_off + i * 4)
+                _, p = read_uleb(off)
+                end = data.index(0, p)
+                strings.append(data[p:end].decode("utf-8", "replace"))
+            types = [strings[struct.unpack_from("<I", data, type_off + i * 4)[0]] for i in range(type_sz)]
+            protos: list[str] = []
+            for i in range(proto_sz):
+                _, ret_idx, params_off = struct.unpack_from("<3I", data, proto_off + i * 12)
+                params: list[str] = []
+                if params_off:
+                    (cnt,) = struct.unpack_from("<I", data, params_off)
+                    for j in range(cnt):
+                        (t_idx,) = struct.unpack_from("<H", data, params_off + 4 + j * 2)
+                        params.append(types[t_idx])
+                protos.append(f"({''.join(params)}){types[ret_idx]}")
+            fields = [
+                (types[c], strings[n], types[t])
+                for c, t, n in (struct.unpack_from("<HHI", data, field_off + i * 8) for i in range(field_sz))
+            ]
+            methods = [
+                (types[c], strings[n], protos[p])
+                for c, p, n in (struct.unpack_from("<HHI", data, meth_off + i * 8) for i in range(meth_sz))
+            ]
+
+            for i in range(cls_sz):
+                cls_idx, _, sup_idx, iface_off, _, _, class_data_off, _ = struct.unpack_from("<8I", data, cls_off + i * 32)
+                cname = types[cls_idx]
+                sup = types[sup_idx] if sup_idx != 0xFFFFFFFF else None
+                ifaces: list[str] = []
+                if iface_off:
+                    (icnt,) = struct.unpack_from("<I", data, iface_off)
+                    for j in range(icnt):
+                        ifaces.append(types[struct.unpack_from("<H", data, iface_off + 4 + j * 2)[0]])
+                all_classes[cname] = (sup, ifaces)
+                if class_data_off:
+                    sf_sz, pos = read_uleb(class_data_off)
+                    if_sz, pos = read_uleb(pos)
+                    dm_sz, pos = read_uleb(pos)
+                    vm_sz, pos = read_uleb(pos)
+                    fidx = 0
+                    for _ in range(sf_sz):
+                        d, pos = read_uleb(pos)
+                        fidx += d
+                        _, pos = read_uleb(pos)
+                        all_fields.add(fields[fidx])
+                    fidx = 0
+                    for _ in range(if_sz):
+                        d, pos = read_uleb(pos)
+                        fidx += d
+                        _, pos = read_uleb(pos)
+                        all_fields.add(fields[fidx])
+                    midx = 0
+                    for _ in range(dm_sz):
+                        d, pos = read_uleb(pos)
+                        midx += d
+                        _, pos = read_uleb(pos)
+                        _, pos = read_uleb(pos)
+                        all_methods.add(methods[midx])
+                    midx = 0
+                    for _ in range(vm_sz):
+                        d, pos = read_uleb(pos)
+                        midx += d
+                        _, pos = read_uleb(pos)
+                        _, pos = read_uleb(pos)
+                        all_methods.add(methods[midx])
+            if dn == custom_dex_name:
+                custom_refs = (set(types), set(fields), set(methods))
+
+    if custom_refs is None:
+        raise RuntimeError(f"Custom DEX {custom_dex_name} not found in {apk_path}")
+
+    def is_sdk(t: str | None) -> bool:
+        return t is None or t.startswith(("Landroid/", "Ljava/", "Ljavax/", "Ldalvik/", "Lorg/json/", "[")) or len(t) == 1
+
+    def has_method(cls: str, name: str, proto: str) -> bool:
+        visited: set[str] = set()
+        stack = [cls]
+        while stack:
+            c = stack.pop()
+            if not c or c in visited:
+                continue
+            visited.add(c)
+            if c == "Ljava/lang/Object;":
+                if (name, proto) in _OBJECT_METHODS:
+                    return True
+                continue
+            if is_sdk(c):
+                return True
+            if (c, name, proto) in all_methods:
+                return True
+            if c in all_classes:
+                sup, ifaces = all_classes[c]
+                if sup:
+                    stack.append(sup)
+                stack.extend(ifaces)
+        return False
+
+    def has_field(cls: str, name: str, ftype: str) -> bool:
+        visited: set[str] = set()
+        stack = [cls]
+        while stack:
+            c = stack.pop()
+            if not c or c in visited:
+                continue
+            visited.add(c)
+            if c == "Ljava/lang/Object;":
+                continue
+            if is_sdk(c):
+                return True
+            if (c, name, ftype) in all_fields:
+                return True
+            if c in all_classes:
+                sup, ifaces = all_classes[c]
+                if sup:
+                    stack.append(sup)
+                stack.extend(ifaces)
+        return False
+
+    rt, rf, rm = custom_refs
+    missing_cls = [t for t in sorted(rt) if not is_sdk(t) and t not in all_classes]
+    missing_fld = [f for f in sorted(rf) if not is_sdk(f[0]) and not has_field(*f)]
+    missing_mth = [m for m in sorted(rm) if not is_sdk(m[0]) and not has_method(*m)]
+    if missing_cls or missing_fld or missing_mth:
+        lines = ["Cross-DEX symbol link verification FAILED against target APK DEXes:"]
+        for c in missing_cls:
+            lines.append(f"  MISSING CLASS : {c}")
+        for f in missing_fld:
+            lines.append(f"  MISSING FIELD : {f[0]}->{f[1]}:{f[2]}")
+        for m in missing_mth:
+            lines.append(f"  MISSING METHOD: {m[0]}->{m[1]}{m[2]}")
+        raise RuntimeError("\n".join(lines))
+    print(f"[OK] Full cross-DEX symbol link check passed across {len(all_classes):,} APK classes (0 missing symbols)!")
 
 
 def save_annotations(mod_id: str, short_name: str, orig_path: Path, patched_text: str) -> str:
@@ -692,20 +947,14 @@ def patch_apk(input_apk: Path, output_apk: Path) -> None:
         custom_dex, stub_jar = build_custom_dex(work_dir)
         target_dex_names, new_dex_name = locate_target_dex(input_apk)
 
-        patchers = {
-            "MOD-01": patch_venus_application,
-            "MOD-02": patch_main_activity,
-            "MOD-03": patch_assistant_controller,
-            "MOD-04": patch_ask_ai_task,
-            "MOD-05": patch_rayneo_net_bridge,
-        }
         applied_mods: set[str] = set()
         patched_dex_map: dict[str, Path] = {}
         all_diffs: list[str] = []
 
         classpath = str(TOOLS_LIB / "*")
 
-        print("\n=== Step 2: Baksmali -> Inject MOD-01..MOD-05 -> Smali ===")
+        print("\n=== Step 2: Baksmali -> Discover MOD-05 -> Inject MOD-01..MOD-05 -> Smali ===")
+        smali_dirs: dict[str, Path] = {}
         with zipfile.ZipFile(input_apk, "r") as zf:
             for dn in target_dex_names:
                 raw_dex = work_dir / f"orig_{dn}"
@@ -715,31 +964,46 @@ def patch_apk(input_apk: Path, output_apk: Path) -> None:
                     str(JAVA_EXE), "-cp", classpath, "com.android.tools.smali.baksmali.Main",
                     "d", str(raw_dex), "-o", str(smali_dir), "--api", MIN_API,
                 ])
+                smali_dirs[dn] = smali_dir
 
-                dex_patched = False
-                for mod_id, (rel_path, short_name) in TARGET_CLASSES.items():
-                    candidate = smali_dir / rel_path
-                    if candidate.exists():
-                        orig_text = candidate.read_text(encoding="utf-8")
-                        patched_text = patchers[mod_id](orig_text)
-                        diff_str = save_annotations(mod_id, short_name, candidate, patched_text)
-                        all_diffs.append(f"### {mod_id}: {rel_path}\n{diff_str}\n")
-                        candidate.write_text(patched_text, encoding="utf-8")
-                        applied_mods.add(mod_id)
-                        dex_patched = True
-                        print(f"[PATCHED] {mod_id} -> {dn}:{rel_path}")
+        bridge_rel_path, bridge_short_name, bridge_dot_name, bridge_desc = discover_rayneo_net_bridge_smali(smali_dirs)
 
-                if dex_patched:
-                    out_patched_dex = work_dir / f"patched_{dn}"
-                    run_cmd([
-                        str(JAVA_EXE), "-cp", classpath, "com.android.tools.smali.smali.Main",
-                        "a", str(smali_dir), "-o", str(out_patched_dex), "--api", MIN_API,
-                    ])
-                    patched_dex_map[dn] = out_patched_dex
-                else:
-                    print(f"[SKIP] {dn} contains references only, left byte-for-byte untouched")
+        target_classes = dict(STATIC_TARGET_CLASSES)
+        target_classes["MOD-05"] = (bridge_rel_path, bridge_short_name)
 
-        missing = set(TARGET_CLASSES.keys()) - applied_mods
+        patchers = {
+            "MOD-01": lambda s: patch_venus_application(s, bridge_dot_name),
+            "MOD-02": patch_main_activity,
+            "MOD-03": patch_assistant_controller,
+            "MOD-04": patch_ask_ai_task,
+            "MOD-05": lambda s: patch_rayneo_net_bridge(s, bridge_desc),
+        }
+
+        for dn, smali_dir in smali_dirs.items():
+            dex_patched = False
+            for mod_id, (rel_path, short_name) in target_classes.items():
+                candidate = smali_dir / rel_path
+                if candidate.exists():
+                    orig_text = candidate.read_text(encoding="utf-8")
+                    patched_text = patchers[mod_id](orig_text)
+                    diff_str = save_annotations(mod_id, short_name, candidate, patched_text)
+                    all_diffs.append(f"### {mod_id}: {rel_path}\n{diff_str}\n")
+                    candidate.write_text(patched_text, encoding="utf-8")
+                    applied_mods.add(mod_id)
+                    dex_patched = True
+                    print(f"[PATCHED] {mod_id} -> {dn}:{rel_path}")
+
+            if dex_patched:
+                out_patched_dex = work_dir / f"patched_{dn}"
+                run_cmd([
+                    str(JAVA_EXE), "-cp", classpath, "com.android.tools.smali.smali.Main",
+                    "a", str(smali_dir), "-o", str(out_patched_dex), "--api", MIN_API,
+                ])
+                patched_dex_map[dn] = out_patched_dex
+            else:
+                print(f"[SKIP] {dn} contains references only, left byte-for-byte untouched")
+
+        missing = set(target_classes.keys()) - applied_mods
         if missing:
             raise RuntimeError(f"Failed to locate & patch: {sorted(missing)}")
 
@@ -759,7 +1023,7 @@ def patch_apk(input_apk: Path, output_apk: Path) -> None:
         ])
         print("[OK] Joint D8 bytecode/register verification passed with 0 errors!")
 
-        print("\n=== Step 4: Repackage APK (preserving ZIP_STORED) -> Zipalign (-P 16) -> Sign ===")
+        print("\n=== Step 4: Repackage APK -> Cross-DEX Link Check -> Zipalign (-P 16) -> Sign ===")
         unaligned_apk = work_dir / "unaligned.apk"
         aligned_apk = work_dir / "aligned.apk"
 
@@ -779,6 +1043,8 @@ def patch_apk(input_apk: Path, output_apk: Path) -> None:
             zi_new = zipfile.ZipInfo(new_dex_name)
             zi_new.compress_type = zipfile.ZIP_DEFLATED
             zout.writestr(zi_new, custom_dex.read_bytes(), compress_type=zipfile.ZIP_DEFLATED)
+
+        verify_apk_dex_symbol_links(unaligned_apk, new_dex_name)
 
         run_cmd([str(ZIPALIGN_EXE), "-P", "16", "-f", "4", str(unaligned_apk), str(aligned_apk)])
         run_cmd([str(ZIPALIGN_EXE), "-P", "16", "-c", "4", str(aligned_apk)])

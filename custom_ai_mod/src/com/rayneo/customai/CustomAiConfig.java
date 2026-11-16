@@ -13,6 +13,13 @@ public final class CustomAiConfig {
 
     public static final String PREF_NAME = "rayneo_custom_ai_prefs";
     public static final String KEY_SYNC_LYRICS_TELEPROMPTER = "sync_lyrics_teleprompter";
+    public static final String KEY_LYRICS_DISPLAY_MODE = "lyrics_display_mode";
+
+    public static final String LYRICS_MODE_ORIGINAL = "original";
+    public static final String LYRICS_MODE_BILINGUAL = "bilingual";
+    public static final String LYRICS_MODE_ROMAJI = "romaji";
+    public static final String LYRICS_MODE_TRILINGUAL = "trilingual";
+
     private static final String FLUTTER_PREF_NAME = "FlutterSharedPreferences";
     private static final String FLUTTER_ASK_AI_OVERRIDE_KEY = "flutter.dev_ask_ai_transport_mode_override";
 
@@ -28,7 +35,13 @@ public final class CustomAiConfig {
     public boolean autoContinueAfterTts = false;
     public boolean passThroughOfficialSkills = true;
     public boolean syncLyricsToTeleprompter = false;
+    public String lyricsDisplayMode = LYRICS_MODE_BILINGUAL;
     public int skillRouteTimeoutMs = 3500;
+
+    public boolean enableMcpAndSkills = true;
+    public boolean enableBuiltinSkills = true;
+    public String mcpServersJson = "[]";
+    public String customSkillsJson = "[]";
 
     public String apiProtocol = OpenAiApiClient.PROTO_CHAT_COMPLETIONS;
     public String baseUrl = "https://api.openai.com/v1";
@@ -56,6 +69,11 @@ public final class CustomAiConfig {
         c.autoContinueAfterTts = sp.getBoolean("autoContinueAfterTts", false);
         c.passThroughOfficialSkills = sp.getBoolean("passThroughOfficialSkills", true);
         c.syncLyricsToTeleprompter = sp.getBoolean(KEY_SYNC_LYRICS_TELEPROMPTER, false);
+        c.lyricsDisplayMode = normalizeLyricsMode(sp.getString(KEY_LYRICS_DISPLAY_MODE, LYRICS_MODE_BILINGUAL));
+        c.enableMcpAndSkills = sp.getBoolean("enableMcpAndSkills", true);
+        c.enableBuiltinSkills = sp.getBoolean("enableBuiltinSkills", true);
+        c.mcpServersJson = sp.getString("mcpServersJson", "[]");
+        c.customSkillsJson = sp.getString("customSkillsJson", "[]");
         int rawRouteMs = sp.getInt("skillRouteTimeoutMs", 3500);
         if (rawRouteMs == 2000 && !sp.contains("skillRouteTimeoutUpgradedV2")) {
             rawRouteMs = 3500;
@@ -92,6 +110,11 @@ public final class CustomAiConfig {
                 .putBoolean("autoContinueAfterTts", autoContinueAfterTts)
                 .putBoolean("passThroughOfficialSkills", passThroughOfficialSkills)
                 .putBoolean(KEY_SYNC_LYRICS_TELEPROMPTER, syncLyricsToTeleprompter)
+                .putString(KEY_LYRICS_DISPLAY_MODE, normalizeLyricsMode(lyricsDisplayMode))
+                .putBoolean("enableMcpAndSkills", enableMcpAndSkills)
+                .putBoolean("enableBuiltinSkills", enableBuiltinSkills)
+                .putString("mcpServersJson", safe(mcpServersJson, "[]"))
+                .putString("customSkillsJson", safe(customSkillsJson, "[]"))
                 .putInt("skillRouteTimeoutMs", Math.max(500, Math.min(10000, skillRouteTimeoutMs)))
                 .putBoolean("skillRouteTimeoutUpgradedV2", true)
                 .putString("apiProtocol", safe(apiProtocol, OpenAiApiClient.PROTO_CHAT_COMPLETIONS))
@@ -159,6 +182,11 @@ public final class CustomAiConfig {
         m.put("autoContinueAfterTts", autoContinueAfterTts);
         m.put("passThroughOfficialSkills", passThroughOfficialSkills);
         m.put(KEY_SYNC_LYRICS_TELEPROMPTER, syncLyricsToTeleprompter);
+        m.put(KEY_LYRICS_DISPLAY_MODE, normalizeLyricsMode(lyricsDisplayMode));
+        m.put("enableMcpAndSkills", enableMcpAndSkills);
+        m.put("enableBuiltinSkills", enableBuiltinSkills);
+        m.put("mcpServersJson", safe(mcpServersJson, "[]"));
+        m.put("customSkillsJson", safe(customSkillsJson, "[]"));
         m.put("skillRouteTimeoutMs", skillRouteTimeoutMs);
         m.put("apiProtocol", apiProtocol);
         m.put("baseUrl", baseUrl);
@@ -188,6 +216,12 @@ public final class CustomAiConfig {
         c.passThroughOfficialSkills = readBool(m, "passThroughOfficialSkills", c.passThroughOfficialSkills);
         c.syncLyricsToTeleprompter = readBool(m, KEY_SYNC_LYRICS_TELEPROMPTER,
                 readBool(m, "syncLyricsToTeleprompter", c.syncLyricsToTeleprompter));
+        c.lyricsDisplayMode = normalizeLyricsMode(readStr(m, KEY_LYRICS_DISPLAY_MODE,
+                readStr(m, "lyricsDisplayMode", c.lyricsDisplayMode)));
+        c.enableMcpAndSkills = readBool(m, "enableMcpAndSkills", c.enableMcpAndSkills);
+        c.enableBuiltinSkills = readBool(m, "enableBuiltinSkills", c.enableBuiltinSkills);
+        c.mcpServersJson = readStr(m, "mcpServersJson", c.mcpServersJson);
+        c.customSkillsJson = readStr(m, "customSkillsJson", c.customSkillsJson);
         c.skillRouteTimeoutMs = readInt(m, "skillRouteTimeoutMs", c.skillRouteTimeoutMs);
         c.apiProtocol = readStr(m, "apiProtocol", c.apiProtocol);
         c.baseUrl = readStr(m, "baseUrl", c.baseUrl);
@@ -202,6 +236,16 @@ public final class CustomAiConfig {
         c.timeoutSeconds = readInt(m, "timeoutSeconds", c.timeoutSeconds);
         c.customHeadersJson = readStr(m, "customHeadersJson", c.customHeadersJson);
         return c;
+    }
+
+    public static String normalizeLyricsMode(String raw) {
+        if (raw == null) return LYRICS_MODE_BILINGUAL;
+        String s = raw.trim().toLowerCase(java.util.Locale.ROOT);
+        if (LYRICS_MODE_ORIGINAL.equals(s)) return LYRICS_MODE_ORIGINAL;
+        if (LYRICS_MODE_BILINGUAL.equals(s)) return LYRICS_MODE_BILINGUAL;
+        if (LYRICS_MODE_ROMAJI.equals(s)) return LYRICS_MODE_ROMAJI;
+        if (LYRICS_MODE_TRILINGUAL.equals(s)) return LYRICS_MODE_TRILINGUAL;
+        return LYRICS_MODE_BILINGUAL;
     }
 
     private static boolean readBool(Map<String, Object> m, String k, boolean def) {

@@ -4,6 +4,7 @@ import com.rayneo.customai.CustomAiConfig;
 import com.rayneo.customai.CustomAiHooks;
 import com.rayneo.customai.JsonMini;
 import com.rayneo.customai.LyricsTeleprompterBridge;
+import com.rayneo.customai.McpSkillManager;
 import com.rayneo.customai.OpenAiApiClient;
 import com.rayneo.customai.SystemMediaBridge;
 import com.sun.net.httpserver.HttpExchange;
@@ -115,6 +116,9 @@ public final class TestOpenAiClient {
             testResponsesJson(baseUrl);
             testMusicSearchMockHttp(server, "http://127.0.0.1:" + port);
             testLyricsTeleprompterUnitAndMockHttp(server, "http://127.0.0.1:" + port);
+            testBilingualAndRomajiLyrics(server, "http://127.0.0.1:" + port);
+            testMcpAndSkillsEngine(server, "http://127.0.0.1:" + port);
+            testR8DynamicCoreConnectReflection();
             System.out.println("ALL TESTS PASSED!");
         } finally {
             server.stop(0);
@@ -740,6 +744,527 @@ public final class TestOpenAiClient {
                 LyricsTeleprompterBridge.resolveNetEaseSongIdForLyrics(
                         "素颜", "许嵩/何曼婷", 238000L, mockHost),
                 "Grayed-out duet 素颜 resolves to 许嵩/何曼婷 (not DJ karaoke)");
+    }
+
+    // ===== Mock R8-obfuscated CoreConnect shapes (v1.0.25 shifted names: i4, v, u0, f0, lc_h, mc_q) =====
+    public enum MockBizEnum { VOICE_ASSISTANT, TELEPROMPTER }
+    public enum MockPrioEnum { HIGH, LOW, NORMAL }
+    public enum MockCoreEnum { SmallCore, LargeCore }
+
+    public static final class MockI4 {
+        public final String a;
+        public final String b;
+        public final boolean c;
+        public MockI4(String a, String b, boolean c) { this.a = a; this.b = b; this.c = c; }
+    }
+
+    public static final class MockF0 {
+        public final String a;
+        public final boolean connected;
+        public MockF0(String id, boolean connected) { this.a = id; this.connected = connected; }
+        public String a() { return "RayNeo iO"; }
+        public boolean b() { return connected; }
+    }
+
+    public static final class MockU0 {
+        public final byte[] payload;
+        public final String msgId;
+        public final String devId;
+        public final MockBizEnum biz;
+        public final MockPrioEnum prio;
+        public final boolean needAck;
+        public MockU0(byte[] b, String id, String dev, MockBizEnum biz, Object r0,
+                      MockPrioEnum prio, boolean ack, boolean lowPwr, Object p,
+                      kotlin.jvm.functions.Function2 cb) {
+            this.payload = b;
+            this.msgId = id;
+            this.devId = dev;
+            this.biz = biz;
+            this.prio = prio;
+            this.needAck = ack;
+        }
+    }
+
+    public static final class MockCoreConnectV {
+        public static volatile MockCoreConnectV h;
+        public static Map<String, Object> mockDevices = new java.util.LinkedHashMap<>();
+        public MockU0 lastSentMsg;
+        public String lastSharedDev;
+        public MockCoreEnum lastSharedCore;
+
+        public static Map<String, Object> j() { return mockDevices; }
+
+        public void u(MockU0 msg, kotlin.jvm.functions.Function2 cb) {
+            this.lastSentMsg = msg;
+            if (cb != null) cb.invoke(msg, null);
+        }
+
+        public String v(java.io.File file, String devId, MockCoreEnum core, String extra) {
+            this.lastSharedDev = devId;
+            this.lastSharedCore = core;
+            return "task_1025";
+        }
+    }
+
+    public static final class MockBridgeP4 {
+        public static volatile MockBridgeP4 Q;
+        public MockI4 z;
+        public MockCoreConnectV mgr;
+        public MockCoreConnectV q() { return mgr; }
+    }
+
+    private static void testR8DynamicCoreConnectReflection() throws Exception {
+        MockCoreConnectV mgr = new MockCoreConnectV();
+        MockCoreConnectV.h = mgr;
+        MockCoreConnectV.mockDevices.clear();
+        MockCoreConnectV.mockDevices.put("AA:BB:CC:11:22:33", new MockF0("AA:BB:CC:11:22:33", true));
+
+        MockBridgeP4 bridge = new MockBridgeP4();
+        bridge.mgr = mgr;
+        bridge.z = new MockI4("AA:BB:CC:11:22:33", "RayNeo iO", true);
+        MockBridgeP4.Q = bridge;
+
+        LyricsTeleprompterBridge.CoreConnectHandles handles =
+                LyricsTeleprompterBridge.resolveCoreConnectHandlesForClass(MockBridgeP4.class);
+        if (handles == null) {
+            throw new AssertionError("Dynamic CoreConnectHandles resolution returned null!");
+        }
+        assertEq(mgr, handles.resolveMgrInstance(null), "resolveMgrInstance via singleton Q.q()");
+        assertEq(MockCoreEnum.SmallCore, handles.smallCoreConst, "resolved SmallCore enum");
+        assertEq(MockBizEnum.TELEPROMPTER, handles.teleprompterBizConst, "resolved TELEPROMPTER enum");
+        assertEq(MockPrioEnum.NORMAL, handles.normalPriorityConst, "resolved NORMAL priority enum");
+
+        String[] idOut = new String[1];
+        boolean[] connOut = new boolean[1];
+        Object devEntry = handles.getDevicesMap().values().iterator().next();
+        assertEq(true, handles.inspectDeviceEntry(devEntry, idOut, connOut), "inspectDeviceEntry ok");
+        assertEq("AA:BB:CC:11:22:33", idOut[0], "device id field a");
+        assertEq(true, connOut[0], "device connected method b()");
+
+        java.io.File tmp = java.io.File.createTempFile("lyr_test", ".bin");
+        tmp.deleteOnExit();
+        String taskId = handles.invokeFileShare(mgr, tmp, "AA:BB:CC:11:22:33");
+        assertEq("task_1025", taskId, "invokeFileShare taskId");
+        assertEq(MockCoreEnum.SmallCore, mgr.lastSharedCore, "fileShare passed SmallCore");
+
+        final boolean[] cbFired = new boolean[1];
+        handles.invokeSendBle(mgr, new byte[]{1, 2, 3}, "lyr_1", "AA:BB:CC:11:22:33", true,
+                new kotlin.jvm.functions.Function2() {
+                    @Override public Object invoke(Object a, Object b) {
+                        cbFired[0] = (b == null);
+                        return null;
+                    }
+                });
+        assertEq(true, cbFired[0], "invokeSendBle callback fired");
+        assertEq("lyr_1", mgr.lastSentMsg.msgId, "invokeSendBle msgId");
+        assertEq(MockBizEnum.TELEPROMPTER, mgr.lastSentMsg.biz, "invokeSendBle biz==TELEPROMPTER");
+        assertEq(true, mgr.lastSentMsg.needAck, "invokeSendBle needAck==true");
+    }
+
+    private static void testBilingualAndRomajiLyrics(HttpServer server, String mockHost) {
+        // 1. Offline Hepburn Kana -> Romaji transliterator
+        assertEq("kurisumasusongu",
+                LyricsTeleprompterBridge.transliterateJapaneseKanaToRomaji("クリスマスソング"),
+                "katakana long vowel + digraphs");
+        assertEq("chottomatte",
+                LyricsTeleprompterBridge.transliterateJapaneseKanaToRomaji("ちょっとまって"),
+                "hiragana sokuon gemination + cho");
+        assertEq("arigatou",
+                LyricsTeleprompterBridge.transliterateJapaneseKanaToRomaji("ありがとう"),
+                "hiragana arigatou");
+
+        // 2. Bilingual / Romaji / Trilingual / Original-only voice commands & fast-lane check
+        assertEq(LyricsTeleprompterBridge.CMD_MODE_BILINGUAL,
+                LyricsTeleprompterBridge.matchVoiceCommand("小雷小雷，打开双语歌词"),
+                "voice cmd bilingual");
+        assertEq(LyricsTeleprompterBridge.CMD_MODE_BILINGUAL,
+                LyricsTeleprompterBridge.matchVoiceCommand("歌词显示中文翻译"),
+                "voice cmd show translation");
+        assertEq(LyricsTeleprompterBridge.CMD_MODE_ROMAJI,
+                LyricsTeleprompterBridge.matchVoiceCommand("打开罗马音"),
+                "voice cmd romaji");
+        assertEq(LyricsTeleprompterBridge.CMD_MODE_TRILINGUAL,
+                LyricsTeleprompterBridge.matchVoiceCommand("切换到三语歌词"),
+                "voice cmd trilingual");
+        assertEq(LyricsTeleprompterBridge.CMD_MODE_ORIGINAL,
+                LyricsTeleprompterBridge.matchVoiceCommand("仅显示原词"),
+                "voice cmd original only");
+        assertEq(LyricsTeleprompterBridge.CMD_MODE_ORIGINAL,
+                LyricsTeleprompterBridge.matchVoiceCommand("关闭罗马音"),
+                "voice cmd disable romaji -> original");
+        assertEq(null,
+                CustomAiHooks.classifySkillOrRealtimeIntent("帮我把演讲提纲投到眼镜提词器上"),
+                "teleprompter skill fast-lane bypasses RayClaw");
+        assertEq(null,
+                CustomAiHooks.classifySkillOrRealtimeIntent("看看我剪贴板里是什么"),
+                "clipboard skill fast-lane bypasses RayClaw");
+
+        // 3. LrcBundle alignment + companion line wrapping + findCueLineIndex anchor snapping
+        String origLrc = "[00:05.00]どこかで鐘が鳴って\n[00:12.00]ありがとう\n";
+        String transLrc = "[00:00.00]by: 翻译贡献者\n[00:05.05]某处钟声响起\n[00:12.10]谢谢你\n";
+        String romaLrc = "[00:05.00]dokoka de kane ga natte\n"; // 00:12.00 intentionally omitted -> offline Kana fallback!
+        LyricsTeleprompterBridge.LrcBundle bundle =
+                new LyricsTeleprompterBridge.LrcBundle(origLrc, transLrc, romaLrc);
+
+        LyricsTeleprompterBridge.LyricsManuscript triMs =
+                LyricsTeleprompterBridge.parseLrcBundleAndBuildManuscript(
+                        "クリスマスソング", "back number", bundle,
+                        CustomAiConfig.LYRICS_MODE_TRILINGUAL, "网易云音乐");
+        assertEq(true, triMs.hasSyncedLyrics, "triMs synced");
+        assertEq(CustomAiConfig.LYRICS_MODE_TRILINGUAL, triMs.displayMode, "triMs mode");
+
+        boolean sawRoma1 = false;
+        boolean sawOfflineRoma2 = false;
+        boolean sawTrans1 = false;
+        for (int i = 0; i < triMs.lines.length; i++) {
+            String line = triMs.lines[i];
+            if (LyricsTeleprompterBridge.measureHalfWidth(line) > LyricsTeleprompterBridge.MAX_LINE_HALF_WIDTH) {
+                throw new AssertionError("Trilingual line exceeded 34 half-width units: " + line);
+            }
+            if (line.equals("~ dokoka de kane ga natte")) sawRoma1 = true;
+            if (line.equals("~ arigatou")) sawOfflineRoma2 = true;
+            if (line.equals("· 某处钟声响起")) sawTrans1 = true;
+            if (line.contains("翻译贡献")) {
+                throw new AssertionError("Boilerplate translator credit should have been filtered: " + line);
+            }
+        }
+        assertEq(true, sawRoma1, "saw online romalrc line");
+        assertEq(true, sawOfflineRoma2, "saw offline Kana->Romaji fallback line");
+        assertEq(true, sawTrans1, "saw aligned Chinese translation line");
+
+        // CRITICAL: At t=6000ms, raw binary search lands on the last companion line sharing t=5000ms,
+        // whereas findCueLineIndex(6000L) MUST snap back to the Japanese original line "どこかで鐘が鳴って"!
+        int cueIdx6s = triMs.findCueLineIndex(6000L);
+        assertEq("どこかで鐘が鳴って", triMs.lines[cueIdx6s], "findCueLineIndex snaps to primary original line at 6s");
+        assertEq(false, triMs.companionFlags[cueIdx6s], "anchor line has companionFlags==false");
+
+        int cueIdx13s = triMs.findCueLineIndex(13000L);
+        assertEq("ありがとう", triMs.lines[cueIdx13s], "findCueLineIndex snaps to 2nd primary original line at 13s");
+
+        // 4. Custom Teleprompter Note Manuscript builder (used by push_to_teleprompter Skill & Clipboard push)
+        LyricsTeleprompterBridge.LyricsManuscript noteMs =
+                LyricsTeleprompterBridge.buildCustomNoteManuscript(
+                        "三分钟演讲提纲",
+                        "第一部分：开场问候与核心痛点介绍，控制在三十秒以内完成。\n第二部分：演示雷鸟眼镜双语歌词与 MCP 技能联动。");
+        assertEq(true, noteMs.isCustomNote, "noteMs isCustomNote");
+        assertEq(true, noteMs.lines[0].startsWith("[提词] "), "noteMs header prefix");
+        for (String nl : noteMs.lines) {
+            if (LyricsTeleprompterBridge.measureHalfWidth(nl) > LyricsTeleprompterBridge.MAX_LINE_HALF_WIDTH) {
+                throw new AssertionError("Custom note line exceeded HUD width: " + nl);
+            }
+        }
+
+        // 5. Mock Online QQ Music playing Japanese song in Trilingual mode -> QQ trans + NetEase romalrc cross-enrichment!
+        server.removeContext("/api/song/lyric");
+        server.createContext("/api/song/lyric", new HttpHandler() {
+            @Override
+            public void handle(HttpExchange ex) throws IOException {
+                String q = ex.getRequestURI().getRawQuery();
+                if (q == null || !q.contains("tv=-1") || !q.contains("rv=-1")) {
+                    throw new AssertionError("NetEase lyric request missing tv=-1&rv=-1: " + q);
+                }
+                String resp = "{\"code\":200,"
+                        + "\"lrc\":{\"lyric\":\"[00:26.10]どこかで鐘が鳴って\\n\"},"
+                        + "\"tlyric\":{\"lyric\":\"[00:26.10]某处钟声响起\\n\"},"
+                        + "\"romalrc\":{\"lyric\":\"[00:26.10]dokoka de kane ga natte\\n\"}}";
+                byte[] bytes = resp.getBytes(StandardCharsets.UTF_8);
+                ex.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+                ex.sendResponseHeaders(200, bytes.length);
+                try (OutputStream os = ex.getResponseBody()) {
+                    os.write(bytes);
+                }
+            }
+        });
+
+        server.removeContext("/lyric/fcgi-bin/fcg_query_lyric_new.fcg");
+        server.createContext("/lyric/fcgi-bin/fcg_query_lyric_new.fcg", new HttpHandler() {
+            @Override
+            public void handle(HttpExchange ex) throws IOException {
+                String resp = "MusicJsonCallback({\"retcode\":0,"
+                        + "\"lyric\":\"[00&#58;26&#46;10]どこかで鐘が鳴って&#10;\","
+                        + "\"trans\":\"[00&#58;26&#46;10]QQ翻译：某处钟声敲响&#10;\"})";
+                byte[] bytes = resp.getBytes(StandardCharsets.UTF_8);
+                ex.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+                ex.sendResponseHeaders(200, bytes.length);
+                try (OutputStream os = ex.getResponseBody()) {
+                    os.write(bytes);
+                }
+            }
+        });
+
+        SystemMediaBridge.recordResolvedSongHint(
+                SystemMediaBridge.PKG_QQMUSIC, "36871044", "001XmasMid", "クリスマスソング", "back number");
+        LyricsTeleprompterBridge.LyricsManuscript qqEnriched =
+                LyricsTeleprompterBridge.fetchLyricsManuscriptOnline(
+                        "クリスマスソング", "back number", 340000L,
+                        SystemMediaBridge.PKG_QQMUSIC,
+                        CustomAiConfig.LYRICS_MODE_TRILINGUAL,
+                        mockHost, mockHost);
+        String joined = String.join("\n", qqEnriched.lines);
+        if (!joined.contains("~ dokoka de kane ga natte") || !joined.contains("· QQ翻译：某处钟声敲响")) {
+            throw new AssertionError("Expected QQ trans + NetEase romalrc enrichment, got:\n" + joined);
+        }
+    }
+
+    private static void testMcpAndSkillsEngine(HttpServer server, final String mockHost) throws Exception {
+        McpSkillManager.clearMcpCache();
+
+        // 1. Config & parser round-trip (both array format and Claude/Cursor {"mcpServers":{...}} format)
+        CustomAiConfig c1 = new CustomAiConfig();
+        c1.lyricsDisplayMode = CustomAiConfig.LYRICS_MODE_TRILINGUAL;
+        c1.enableMcpAndSkills = true;
+        c1.enableBuiltinSkills = false;
+        c1.mcpServersJson = "{\"mcpServers\":{\"lab\":{\"url\":\"" + mockHost + "/mcp\",\"token\":\"tok_123\"}}}";
+        c1.customSkillsJson = "[{\"name\":\"save_memo\",\"description\":\"保存闪念笔记\",\"webhookUrl\":\""
+                + mockHost + "/hook/memo\",\"method\":\"POST\"}]";
+        CustomAiConfig c2 = CustomAiConfig.fromJsonString(c1.toJsonString());
+        assertEq(CustomAiConfig.LYRICS_MODE_TRILINGUAL, c2.lyricsDisplayMode, "cfg lyricsDisplayMode roundtrip");
+        assertEq(false, c2.enableBuiltinSkills, "cfg enableBuiltinSkills roundtrip");
+
+        List<McpSkillManager.McpServerConfig> parsedMcp = McpSkillManager.parseMcpServers(c2.mcpServersJson);
+        assertEq(1, parsedMcp.size(), "parsed Claude/Cursor mcpServers object");
+        assertEq("lab", parsedMcp.get(0).name, "mcp server name");
+        assertEq("Bearer tok_123", parsedMcp.get(0).headers.get("Authorization"), "mcp bearer token header");
+
+        // 2. Mock Streamable HTTP MCP Server (/mcp) + Webhook Skill (/hook/memo)
+        final List<String> mcpMethodsSeen = new ArrayList<>();
+        final String[] lastWebhookPayload = new String[]{""};
+
+        server.createContext("/mcp", new HttpHandler() {
+            @Override
+            public void handle(HttpExchange ex) throws IOException {
+                String auth = ex.getRequestHeaders().getFirst("Authorization");
+                if (!"Bearer tok_123".equals(auth)) {
+                    ex.sendResponseHeaders(401, -1);
+                    return;
+                }
+                String body = readAll(ex.getRequestBody());
+                Map<String, Object> rpc = JsonMini.parseObject(body);
+                String method = JsonMini.getString(rpc, "method");
+                Object id = rpc.get("id");
+                mcpMethodsSeen.add(method);
+
+                if ("initialize".equals(method)) {
+                    ex.getResponseHeaders().set("Mcp-Session-Id", "sess_rayneo_01");
+                    String resp = "{\"jsonrpc\":\"2.0\",\"id\":" + JsonMini.stringify(id)
+                            + ",\"result\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{\"tools\":{}},"
+                            + "\"serverInfo\":{\"name\":\"MockLabMcp\",\"version\":\"1.0\"}}}";
+                    byte[] b = resp.getBytes(StandardCharsets.UTF_8);
+                    ex.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+                    ex.sendResponseHeaders(200, b.length);
+                    try (OutputStream os = ex.getResponseBody()) { os.write(b); }
+                } else if ("notifications/initialized".equals(method)) {
+                    ex.sendResponseHeaders(202, -1);
+                } else if ("tools/list".equals(method)) {
+                    if (!"sess_rayneo_01".equals(ex.getRequestHeaders().getFirst("Mcp-Session-Id"))) {
+                        throw new AssertionError("Missing Mcp-Session-Id on tools/list");
+                    }
+                    String resp = "{\"jsonrpc\":\"2.0\",\"id\":" + JsonMini.stringify(id)
+                            + ",\"result\":{\"tools\":[{\"name\":\"get_room_temp\","
+                            + "\"description\":\"查询房间温度\","
+                            + "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"room\":{\"type\":\"string\"}}}}]}}";
+                    byte[] b = resp.getBytes(StandardCharsets.UTF_8);
+                    ex.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+                    ex.sendResponseHeaders(200, b.length);
+                    try (OutputStream os = ex.getResponseBody()) { os.write(b); }
+                } else if ("tools/call".equals(method)) {
+                    if (!"sess_rayneo_01".equals(ex.getRequestHeaders().getFirst("Mcp-Session-Id"))) {
+                        throw new AssertionError("Missing Mcp-Session-Id on tools/call");
+                    }
+                    Map<String, Object> params = JsonMini.getMap(rpc, "params");
+                    Map<String, Object> args = JsonMini.getMap(params, "arguments");
+                    String room = JsonMini.getString(args, "room");
+                    // Test SSE-formatted Streamable HTTP MCP response!
+                    String sseResp = "event: message\n"
+                            + "data: {\"jsonrpc\":\"2.0\",\"id\":" + JsonMini.stringify(id)
+                            + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + room + "当前温度 24.5°C，湿度 48%\"}]}}\n\n";
+                    byte[] b = sseResp.getBytes(StandardCharsets.UTF_8);
+                    ex.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
+                    ex.sendResponseHeaders(200, b.length);
+                    try (OutputStream os = ex.getResponseBody()) { os.write(b); }
+                } else {
+                    ex.sendResponseHeaders(404, -1);
+                }
+            }
+        });
+
+        server.createContext("/hook/memo", new HttpHandler() {
+            @Override
+            public void handle(HttpExchange ex) throws IOException {
+                lastWebhookPayload[0] = readAll(ex.getRequestBody());
+                byte[] b = "{\"saved\":true,\"id\":\"memo_88\"}".getBytes(StandardCharsets.UTF_8);
+                ex.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+                ex.sendResponseHeaders(200, b.length);
+                try (OutputStream os = ex.getResponseBody()) { os.write(b); }
+            }
+        });
+
+        // Probe verification
+        String probeReport = McpSkillManager.probeAllMcpServers(c2.mcpServersJson);
+        if (!probeReport.contains("✅ lab (1 个工具): get_room_temp")) {
+            throw new AssertionError("Unexpected MCP probe report: " + probeReport);
+        }
+
+        // 3. End-to-end /v1/chat/completions SSE streaming tool-call loop + Prompt Skill injection
+        final int[] chatRound = new int[]{0};
+        final String[] round1SystemPrompt = new String[]{""};
+        server.createContext("/tool_test/v1/chat/completions", new HttpHandler() {
+            @Override
+            public void handle(HttpExchange ex) throws IOException {
+                int r = ++chatRound[0];
+                String body = readAll(ex.getRequestBody());
+                Map<String, Object> req = JsonMini.parseObject(body);
+                List<Object> msgs = JsonMini.getList(req, "messages");
+
+                if (r == 1) {
+                    Map<String, Object> sysMsg = JsonMini.asMap(msgs.get(0));
+                    round1SystemPrompt[0] = JsonMini.getString(sysMsg, "content");
+                    List<Object> tools = JsonMini.getList(req, "tools");
+                    if (tools == null || tools.isEmpty()) {
+                        throw new AssertionError("Expected tools array in round 1 chat request!");
+                    }
+                    // Stream chunked tool_calls delta across 2 SSE frames
+                    ex.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
+                    ex.sendResponseHeaders(200, 0);
+                    try (OutputStream os = ex.getResponseBody()) {
+                        writeSse(os, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_mcp_1\",\"type\":\"function\",\"function\":{\"name\":\"mcp__lab__get_room_temp\",\"arguments\":\"{\\\"room\\\":\"}}]}}]}\n\n");
+                        writeSse(os, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"书房\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n");
+                        writeSse(os, "data: [DONE]\n\n");
+                    }
+                } else {
+                    // Verify tool result message is present in round 2
+                    Map<String, Object> lastMsg = JsonMini.asMap(msgs.get(msgs.size() - 1));
+                    assertEq("tool", JsonMini.getString(lastMsg, "role"), "round 2 tool message role");
+                    assertEq("call_mcp_1", JsonMini.getString(lastMsg, "tool_call_id"), "round 2 tool_call_id");
+                    String toolOut = JsonMini.getString(lastMsg, "content");
+                    if (!toolOut.contains("书房当前温度 24.5°C")) {
+                        throw new AssertionError("Tool output missing MCP result: " + toolOut);
+                    }
+                    ex.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
+                    ex.sendResponseHeaders(200, 0);
+                    try (OutputStream os = ex.getResponseBody()) {
+                        writeSse(os, "data: {\"choices\":[{\"delta\":{\"content\":\"书房现在 24.5°C，体感舒适。\"}}]}\n\n");
+                        writeSse(os, "data: [DONE]\n\n");
+                    }
+                }
+            }
+        });
+
+        CustomAiConfig toolCfg = new CustomAiConfig();
+        toolCfg.enableMcpAndSkills = true;
+        toolCfg.enableBuiltinSkills = false;
+        toolCfg.mcpServersJson = c2.mcpServersJson;
+        toolCfg.customSkillsJson = "[{\"name\":\"concise_sop\",\"instructions\":\"务必带温度单位°C\",\"enabled\":true},"
+                + "{\"name\":\"save_memo\",\"description\":\"保存闪念笔记\",\"webhookUrl\":\"" + mockHost + "/hook/memo\",\"method\":\"POST\"}]";
+
+        OpenAiApiClient.EndpointConfig epChat = new OpenAiApiClient.EndpointConfig();
+        epChat.protocol = OpenAiApiClient.PROTO_CHAT_COMPLETIONS;
+        epChat.baseUrl = mockHost + "/tool_test/v1";
+        epChat.apiKey = "sk-tool";
+        epChat.model = "gpt-5-mini";
+        epChat.systemPrompt = "你是眼镜助手";
+        epChat.streamEnabled = true;
+        epChat.toolExecutor = McpSkillManager.createExecutor(null, toolCfg, 0L);
+
+        final List<String> statusNotes = new ArrayList<>();
+        String chatToolAnswer = OpenAiApiClient.streamChat(epChat, null, "查一下书房温度",
+                new OpenAiApiClient.StreamCallback() {
+                    @Override public void onReasoningDelta(String d) { statusNotes.add(d); }
+                    @Override public void onTextDelta(String d) {}
+                }, null);
+        assertEq("书房现在 24.5°C，体感舒适。", chatToolAnswer, "chat SSE MCP tool loop final answer");
+        assertEq(2, chatRound[0], "chat completed in 2 rounds");
+        if (!round1SystemPrompt[0].contains("务必带温度单位°C")) {
+            throw new AssertionError("Prompt skill instructions were not injected into system prompt: " + round1SystemPrompt[0]);
+        }
+
+        // 4. End-to-end /v1/responses SSE streaming function_call -> Webhook Skill -> function_call_output loop
+        final int[] respRound = new int[]{0};
+        server.createContext("/tool_test/v1/responses", new HttpHandler() {
+            @Override
+            public void handle(HttpExchange ex) throws IOException {
+                int r = ++respRound[0];
+                String body = readAll(ex.getRequestBody());
+                Map<String, Object> req = JsonMini.parseObject(body);
+                if (r == 1) {
+                    ex.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
+                    ex.sendResponseHeaders(200, 0);
+                    try (OutputStream os = ex.getResponseBody()) {
+                        writeSse(os, "event: response.output_item.done\n"
+                                + "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\","
+                                + "\"call_id\":\"fc_99\",\"name\":\"save_memo\",\"arguments\":\"{\\\"text\\\":\\\"买牛奶\\\"}\"}}\n\n");
+                        writeSse(os, "event: response.completed\n"
+                                + "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n");
+                    }
+                } else {
+                    List<Object> input = JsonMini.getList(req, "input");
+                    Map<String, Object> lastItem = JsonMini.asMap(input.get(input.size() - 1));
+                    assertEq("function_call_output", JsonMini.getString(lastItem, "type"), "responses function_call_output");
+                    assertEq("fc_99", JsonMini.getString(lastItem, "call_id"), "responses call_id");
+                    if (!JsonMini.getString(lastItem, "output").contains("memo_88")) {
+                        throw new AssertionError("Expected webhook response in function_call_output: " + lastItem);
+                    }
+                    ex.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
+                    ex.sendResponseHeaders(200, 0);
+                    try (OutputStream os = ex.getResponseBody()) {
+                        writeSse(os, "event: response.output_text.delta\n"
+                                + "data: {\"type\":\"response.output_text.delta\",\"delta\":\"已帮你记下买牛奶！\"}\n\n");
+                        writeSse(os, "event: response.completed\n"
+                                + "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n");
+                    }
+                }
+            }
+        });
+
+        OpenAiApiClient.EndpointConfig epResp = new OpenAiApiClient.EndpointConfig();
+        epResp.protocol = OpenAiApiClient.PROTO_RESPONSES;
+        epResp.baseUrl = mockHost + "/tool_test/v1";
+        epResp.apiKey = "sk-tool";
+        epResp.model = "gpt-5-mini";
+        epResp.streamEnabled = true;
+        epResp.toolExecutor = McpSkillManager.createExecutor(null, toolCfg, 0L);
+
+        String respToolAnswer = OpenAiApiClient.streamChat(epResp, null, "记个备忘买牛奶", null, null);
+        assertEq("已帮你记下买牛奶！", respToolAnswer, "responses SSE webhook skill final answer");
+        if (!lastWebhookPayload[0].contains("买牛奶")) {
+            throw new AssertionError("Webhook did not receive expected JSON args: " + lastWebhookPayload[0]);
+        }
+
+        // 5. Automatic HTTP 400 fallback when an upstream model/proxy does not support `tools`
+        final int[] fallbackCalls = new int[]{0};
+        server.createContext("/no_tools_model/v1/chat/completions", new HttpHandler() {
+            @Override
+            public void handle(HttpExchange ex) throws IOException {
+                fallbackCalls[0]++;
+                String body = readAll(ex.getRequestBody());
+                Map<String, Object> req = JsonMini.parseObject(body);
+                if (req.containsKey("tools")) {
+                    byte[] err = "{\"error\":{\"message\":\"tools is not supported by this model\"}}"
+                            .getBytes(StandardCharsets.UTF_8);
+                    ex.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+                    ex.sendResponseHeaders(400, err.length);
+                    try (OutputStream os = ex.getResponseBody()) { os.write(err); }
+                } else {
+                    byte[] ok = "{\"choices\":[{\"message\":{\"content\":\"降级纯文本成功\"}}]}"
+                            .getBytes(StandardCharsets.UTF_8);
+                    ex.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+                    ex.sendResponseHeaders(200, ok.length);
+                    try (OutputStream os = ex.getResponseBody()) { os.write(ok); }
+                }
+            }
+        });
+
+        OpenAiApiClient.EndpointConfig epFallback = new OpenAiApiClient.EndpointConfig();
+        epFallback.protocol = OpenAiApiClient.PROTO_CHAT_COMPLETIONS;
+        epFallback.baseUrl = mockHost + "/no_tools_model/v1";
+        epFallback.apiKey = "sk-fallback";
+        epFallback.model = "deepseek-reasoner-lite";
+        epFallback.streamEnabled = false;
+        epFallback.toolExecutor = McpSkillManager.createExecutor(null, toolCfg, 0L);
+
+        String fallbackAns = OpenAiApiClient.streamChat(epFallback, null, "你好", null, null);
+        assertEq("降级纯文本成功", fallbackAns, "auto-retry without tools on HTTP 400");
+        assertEq(2, fallbackCalls[0], "fallback retried once without tools");
     }
 
     private static void writeSse(OutputStream os, String chunk) throws IOException {

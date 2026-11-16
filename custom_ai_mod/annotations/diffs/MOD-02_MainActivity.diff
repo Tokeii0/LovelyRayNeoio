@@ -18,21 +18,21 @@
 +    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-02A] ====================
 +
 +
-     sget-object v0, Lhm0/d;->a:Lhm0/d;
+     sget-object v0, Lxm0/d;->a:Lxm0/d;
  
      invoke-virtual {v0}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
  
 @@ -671,8 +684,13 @@
      .registers 4
  
-     invoke-super {p0}, Ljp0/d;->onResume()V
+     invoke-super {p0}, Laq0/d;->onResume()V
  
 +    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-02B | Attach Draggable CustomAI Floating Badge] ====================
 +    invoke-static/range {p0 .. p0}, Lcom/rayneo/customai/CustomAiHooks;->onMainActivityResume(Landroid/app/Activity;)V
 +    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-02B] ====================
 +
 +
-     sget-object v0, Lfm0/d;->a:Lfm0/d;
+     sget-object v0, Lvm0/d;->a:Lvm0/d;
  
      const-string v1, "ui.attached"
  

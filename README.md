@@ -4,7 +4,7 @@
 
 [![Platform](https://img.shields.io/badge/Platform-Android%208.0%2B-3DDC84?logo=android&logoColor=white)](#)
 [![Protocols](https://img.shields.io/badge/OpenAI-%2Fv1%2Fchat%2Fcompletions%20%7C%20%2Fv1%2Fresponses-412991?logo=openai&logoColor=white)](#)
-[![Target](https://img.shields.io/badge/Tested%20Base-RayNeo%20AI%20v1.0.20-00B4D8)](#)
+[![Target](https://img.shields.io/badge/Tested%20Base-RayNeo%20AI%20v1.0.25-00B4D8)](#)
 [![License](https://img.shields.io/badge/License-AGPLv3%20%2B%20Commons%20Clause%20(%E7%A6%81%E6%AD%A2%E6%94%B6%E8%B4%B9%C2%B7%E5%BC%BA%E5%88%B6%E5%BC%80%E6%BA%90)-E63946)](./LICENSE)
 
 ---
@@ -20,11 +20,16 @@
 
 - 🧠 **双协议自定义大模型自由切换**：原生支持 **`/v1/chat/completions`** 与 **`/v1/responses`**（均支持 SSE 流式输出与非流式 JSON），支持思考模型（`reasoning_effort` / `reasoning_content`）、多轮记忆长度调节、自定义请求头与系统提示词，自动注入设备当前本地时间与星期。
 - 🎙️ **100% 保留原版 ASR 与原版 TTS（不断流）**：继续使用雷鸟原生离线唤醒 + 高精度语音识别 + 官方 TTS 音色播报；内置 C++ 云端工作流干净停流与状态信号隔离机制，彻底根治长回复播报 3~4 个字自动断流的问题。
-- 🎤 **眼镜 HUD 音乐歌词与提词器毫秒级实时联动（`LyricsTeleprompterBridge`）**：打通系统 `MediaSession` 播放进度插值、网易云音乐 / QQ音乐高精度 `.lrc` 原曲歌词解析引擎与 **雷鸟 io (`SmallCore`)** 蓝牙提词器真实线协议（`vb.h.TELEPROMPTER = 0x14` + `w.u(v0)` / `w.v(file, SmallCore)` 文件通道）：
-  - **支持语音与面板一键开关**：直接对眼镜说 **`「打开歌词 / 把歌词投到眼镜上 / 开启提词器歌词联动」`** 或 **`「关闭歌词 / 退出歌词」`**，也可在 `⚡LLM` 面板开启 **「🎤 音乐歌词实时联动眼镜提词器」** 或点击 **「🎵 立即同步当前歌曲歌词到眼镜」**；
+- 🎤 **眼镜 HUD 音乐歌词与提词器毫秒级实时联动（支持双语译文 & 日语罗马音，`LyricsTeleprompterBridge`）**：打通系统 `MediaSession` 播放进度插值、网易云音乐 / QQ音乐高精度多轨 `.lrc` 解析引擎与 **雷鸟 io (`SmallCore`)** 蓝牙提词器真实线协议（动态反射解析 `CoreConnect` 通道，无惧 R8 混淆重排）：
+  - **支持四档显示模式（双语 / 罗马音 / 三语 / 仅原词）**：内置 **「双语译文」**（默认，外语歌自动对齐中文翻译）、**「原词+罗马音」**（自动拉取网易云汉字注音 `romalrc`，QQ音乐播放日语歌时自动跨平台借用网易云罗马音，纯假名段落内置离线平文式罗马音转写兜底）、**「三语全显」**（原词 + `~ 罗马音` + `· 中文译文` 锚定同屏显示）与 **「仅原词」**；
+  - **支持语音与面板一键切换**：直接对眼镜说 **`「打开歌词 / 打开双语歌词 / 打开罗马音 / 切换到三语歌词 / 仅显示原词 / 关闭歌词」`**，也可在 `⚡LLM` 面板切换模式或点击 **「📤 剪贴板投送眼镜」**；
   - **原版中日英文歌词精准命中**：专用歌词解析器完整保留 VIP/灰标无版权原曲（歌词接口免费返回），支持日语歌曲 `tns` 译名后缀匹配（如 `クリスマスソング (圣诞颂歌) - back number`）、多歌手分词（`/`、`&`、`、`）与时长对齐，自动剔除未请求的 `Cover/翻唱/伴奏/DJ/Live`；
-  - **自动进入实时提词 · 整首零刷屏逐行推进**：每首歌仅在开场通过 `0x02 (countdown=3) -> fileShare -> 0x02 (code=7) -> 550ms 预览就绪 -> 0x03` 自动进入提词（**无需手动触碰镜腿播放键**），随后全程通过轻量 `0x08 ProgressUpdate` 毫秒级推进高亮行，整首零重传、零死机；
+  - **自动进入实时提词 · 整首零刷屏逐行推进**：每首歌仅在开场通过 `0x02 (countdown=3) -> fileShare -> 0x02 (code=7) -> 550ms 预览就绪 -> 0x03` 自动进入提词（**无需手动触碰镜腿播放键**），随后全程通过轻量 `0x08 ProgressUpdate` 毫秒级推进并自动锚定原词主行（双语/三语绝不跳行切半），整首零重传、零死机；
   - **无感避让与槽位隔离**：固定复用单一歌词槽位 DID（不污染用户原有提词文稿）并拦截专属回包避免官方 Flutter 冲突；唤醒「小雷小雷」期间自动暂挂推送，镜腿手动退出提词后本首不再强弹（切歌自动恢复）。
+- 🧩 **轻量可扩展 MCP 与 Skills 技能引擎（`McpSkillManager`）**：双协议（`/v1/chat/completions` 与 `/v1/responses` 流式/非流式）原生支持多轮 Function Calling 工具调用闭环，遇到不支持 `tools` 的模型自动无感降级重试：
+  - **内置眼镜本地技能**：开箱自带 `push_to_teleprompter`（一句话生成演讲提纲/要点直接投送到眼镜提词器常驻显示）、`clipboard_manage`（读取/翻译/总结手机剪贴板或将 AI 结果写入剪贴板）、`get_phone_status`（查询手机实时电量与播放状态），后续扩展新原生技能仅需调用 `McpSkillManager.registerBuiltinSkill(...)`；
+  - **自定义 JSON Skills**：支持声明式 **Prompt 规范技能**（动态注入 SOP 指令）与 **HTTP Webhook 动作技能**（一键对接飞书/钉钉机器人、Notion、HomeAssistant、OpenClaw 等）；
+  - **远程 / 局域网 MCP Server 接入**：内置标准 **MCP Streamable HTTP (`JSON-RPC 2.0`)** 客户端（支持 `initialize` 会话握手、`tools/list` 工具发现缓存、`tools/call` JSON/SSE 双格式解析），兼容数组格式与 Claude/Cursor 标准 `{"mcpServers": {...}}` 配置格式，面板内支持一键 **「🔍 探测 MCP 工具」**。
 - 🎵 **突破官方限制：语音搜歌点播 + 系统级第三方音乐切歌 + 实时曲目抓取（`SystemMediaBridge`）**：直接联动 **网易云音乐 / QQ音乐深度播控协议** 与 Android `MediaSessionManager`（兼容汽水音乐、酷狗、Apple Music、Spotify、哔哩哔哩等）：
   - **🎤 语音直接点歌播放（新增）**：直接对眼镜或手机说 **`「我想听李荣浩的模特」「我想听李荣浩」「放一首周杰伦的晴天」「用QQ音乐放陈奕迅的十年」`**，自动检索正版录音室音源（自动过滤灰色无版权曲目与伴奏/翻唱，单说歌手名时自动避开正在放的歌轮换热曲），先由眼镜语音播报歌名再无感后台拉起播放，不刷屏跳转播放器全屏页、不清空原有播放列表！同时支持 **`「我想听每日推荐 / 放点日推」「打开私人FM」`**；
   - **⏭️ 系统级切歌与播控**：支持语音 **`切歌 / 下一首`、`上一首`、`暂停播放`、`继续播放`、`收藏这首歌`**；
@@ -69,7 +74,7 @@ flowchart TD
 3. **Android SDK**（配置 `ANDROID_HOME` 或 `ANDROID_SDK_ROOT`）：
    - `platforms;android-34`（或更高版本，如 `android-35` / `android-36`）
    - `build-tools;34.0.0`（或更高版本，需包含 `d8`、`zipalign`、`apksigner`）
-4. **官方原版安装包**：自行从雷鸟官方渠道下载 `RayNeo_AI_1.0.20.apk`（或更新版本，**本仓库不包含任何官方 APK 文件**）。
+4. **官方原版安装包**：自行从雷鸟官方渠道下载 `RayNeo_AI_1.0.25.apk`（兼容 `1.0.20` 及更新版本，**本仓库不包含任何官方 APK 文件**）。
 
 ---
 
@@ -82,23 +87,23 @@ git clone https://github.com/Tokeii0/LovelyRayNeoio.git
 cd LovelyRayNeoio
 ```
 
-将下载好的雷鸟官方原版 APK（例如 `RayNeo_AI_1.0.20.apk`）放到项目根目录或任意位置。
+将下载好的雷鸟官方原版 APK（例如 `RayNeo_AI_1.0.25.apk`）放到项目根目录或任意位置。
 
 ### 第二步：一键生成自定义 AI 版 APK
 
 - **方式 A（Windows 拖拽一键构建）**：  
-  直接鼠标按住 `RayNeo_AI_1.0.20.apk`，拖放到根目录的 **`upgrade_apk.bat`** 图标上松开即可。
+  直接鼠标按住 `RayNeo_AI_1.0.25.apk`，拖放到根目录的 **`upgrade_apk.bat`** 图标上松开即可。
 
 - **方式 B（跨平台命令行构建）**：
   ```bash
-  python custom_ai_mod/patch_apk.py RayNeo_AI_1.0.20.apk
+  python custom_ai_mod/patch_apk.py RayNeo_AI_1.0.25.apk
   ```
   构建脚本会自动完成：
-  1. 编译 `com.rayneo.customai.*` 源码为独立追加 DEX；
-  2. 自动定位目标 DEX 并注入 `MOD-01 ~ MOD-05` 桥接钩子；
-  3. 运行 `d8` 跨 DEX 联合字节码与寄存器校验；
+  1. 编译 `com.rayneo.customai.*` 源码为独立追加 DEX（`CoreConnect` 蓝牙通道采用动态特征反射，无惧 R8 混淆重排）；
+  2. 自动定位目标 DEX（含动态扫描定位 `MOD-05` 蓝牙桥接类）并注入 `MOD-01 ~ MOD-05` 钩子；
+  3. 运行 `d8` 跨 DEX 联合字节码校验 + **全量 APK 跨 DEX 符号链接核验（确保 0 缺失类/字段/方法）**；
   4. 执行 Android 15+ 要求的 `zipalign -P 16`（16KB 页对齐）；
-  5. 若本地不存在 `custom_ai_mod/keys/rayneo_custom_ai.jks`，**首次运行会自动调用 `keytool` 生成你本地专属的签名密钥库** 并完成 V1+V2+V3 签名校验，最终在同目录输出 `RayNeo_AI_1.0.20_CustomAI.apk`。
+  5. 若本地不存在 `custom_ai_mod/keys/rayneo_custom_ai.jks`，**首次运行会自动调用 `keytool` 生成你本地专属的签名密钥库** 并完成 V1+V2+V3 签名校验，最终在同目录输出 `RayNeo_AI_1.0.25_CustomAI.apk`。
 
 > ⚠️ **请妥善保留生成的 `custom_ai_mod/keys/rayneo_custom_ai.jks`！**  
 > 只要后续升级继续使用同一个 `.jks` 签名，即可永远使用「覆盖安装」更新，无需卸载重配。
@@ -106,10 +111,10 @@ cd LovelyRayNeoio
 ### 第三步：安装到手机（首次安装 vs 后续更新）
 
 #### 1. 首次安装（从官方原版切换到 LovelyRayNeoio）
-由于自定义签名与雷鸟官方出厂签名不同，**仅第一次切换时**需要先卸载手机上的官方原版 App，然后安装构建出的 `RayNeo_AI_1.0.20_CustomAI.apk`：
+由于自定义签名与雷鸟官方出厂签名不同，**仅第一次切换时**需要先卸载手机上的官方原版 App，然后安装构建出的 `RayNeo_AI_1.0.25_CustomAI.apk`：
 
 ```bash
-adb install RayNeo_AI_1.0.20_CustomAI.apk
+adb install RayNeo_AI_1.0.25_CustomAI.apk
 ```
 
 安装后打开雷鸟 App：
@@ -120,7 +125,7 @@ adb install RayNeo_AI_1.0.20_CustomAI.apk
 之后每次修改代码或跟进雷鸟官方新版 APK 重新打包后，**严禁卸载旧包**，直接执行覆盖安装即可：
 
 ```bash
-adb install -r RayNeo_AI_1.0.20_CustomAI.apk
+adb install -r RayNeo_AI_1.0.25_CustomAI.apk
 ```
 （或将 APK 发到手机直接点击「覆盖更新」），**登录状态、雷鸟 io 蓝牙配对、自定义 API Key 与历史记录将 100% 原样保留！**
 
@@ -181,7 +186,8 @@ adb install -r RayNeo_AI_1.0.20_CustomAI.apk
 
 | 场景分类 | 语音示例 | 实际执行引擎 |
 | :--- | :--- | :--- |
-| **📜 歌词联动眼镜提词器** | 「打开歌词」「把歌词投到眼镜上」「开启提词器歌词联动」「关闭歌词」「退出歌词」 | **本地 `LyricsTeleprompterBridge`**（实时抓取 `.lrc` 歌词并通过 `BLE 0x14` 驱动眼镜提词器逐行高亮同步） |
+| **📜 歌词联动 & 双语/罗马音** | 「打开歌词」「打开双语歌词」「打开罗马音」「切换到三语歌词」「仅显示原词」「关闭歌词」 | **本地 `LyricsTeleprompterBridge`**（多轨 `.lrc` 对齐 + 罗马音转写 + `BLE 0x14` 锚定逐行同步） |
+| **🧩 本地技能 & MCP 工具** | 「帮我拟个三分钟演讲提纲投到眼镜提词器上」「总结一下我手机剪贴板里的内容」 | **自定义大模型 + `McpSkillManager`**（多轮 Function Calling 调用内置技能 / Webhook / MCP Server） |
 | **🎤 语音搜歌点播** | 「我想听李荣浩的模特」「我想听李荣浩」「放一首晴天」「用QQ音乐放陈奕迅的十年」「我想听每日推荐」「打开私人FM」 | **本地 `SystemMediaBridge`**（检索正版曲库 + 播报歌名后无感后台拉起网易云音乐/QQ音乐直播） |
 | **🎵 音乐切歌与播控** | 「切歌」「下一首歌」「切回上一首」「暂停播放」「继续播放」「收藏这首歌」 | **本地 `SystemMediaBridge`**（直接控制网易云音乐/QQ音乐/Spotify 等并播报新歌名） |
 | **🎶 实时识曲与歌曲提问** | 「现在放的是什么歌」「这首歌叫什么」「介绍一下现在放的这首歌」「推荐几首风格差不多的歌」 | **本地曲目抓取 + 自定义大模型**（自动读取当前系统播放曲目注入上下文） |
@@ -215,9 +221,10 @@ LovelyRayNeoio/
     │   └── TestOpenAiClient.java       # 双协议 SSE/JSON、意图分流、媒体点歌与歌词提词器协议单元测试
     └── src/com/rayneo/customai/
         ├── CustomAiHooks.java          # 核心桥接调度器：系统播控 + 歌词联动 + 三层官方技能分流 + 自定义 LLM
-        ├── LyricsTeleprompterBridge.java# 音乐 LRC 歌词抓取排版引擎 & 眼镜 BLE 提词器握手与毫秒级进度同步驱动
+        ├── LyricsTeleprompterBridge.java# 多轨双语/罗马音 LRC 解析引擎 & 眼镜 BLE 提词器握手与毫秒级进度同步驱动
+        ├── McpSkillManager.java        # 轻量可扩展 MCP (Streamable HTTP JSON-RPC 2.0) 与本地/Webhook/Prompt Skills 引擎
         ├── SystemMediaBridge.java      # Android MediaSessionManager 第三方播放器控制、语音点歌与实时曲目抓取
-        ├── OpenAiApiClient.java        # 零第三方依赖 /v1/chat/completions & /v1/responses 流式客户端
+        ├── OpenAiApiClient.java        # 零第三方依赖双协议流式客户端 + 多轮 Function Calling 工具执行闭环
         ├── RayNeoOriginalTtsBridge.java# 复用雷鸟原厂 TTSController 语音播报与防断流看门狗
         ├── CustomAiSettingsDialog.java # 纯自绘主题解耦暗黑配置面板与调用历史查看器
         ├── CustomAiFloatingBadge.java  # 应用内可拖拽 ⚡LLM 实时状态悬浮胶囊按钮

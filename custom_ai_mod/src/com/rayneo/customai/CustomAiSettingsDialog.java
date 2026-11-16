@@ -489,34 +489,103 @@ public final class CustomAiSettingsDialog {
             }
         }
 
+        final String[] lyricsModeValues = new String[]{
+                CustomAiConfig.LYRICS_MODE_ORIGINAL,
+                CustomAiConfig.LYRICS_MODE_BILINGUAL,
+                CustomAiConfig.LYRICS_MODE_ROMAJI,
+                CustomAiConfig.LYRICS_MODE_TRILINGUAL
+        };
+        addFieldLabel(activity, cardSwitches, "歌词上屏模式（支持语音：打开双语歌词 / 打开罗马音 / 打开三语歌词）", true);
+        final SegmentSelector segLyricsMode = new SegmentSelector(
+                activity,
+                new String[]{"仅原词", "双语译文", "原词+罗马音", "三语全显"},
+                11f
+        );
+        int initLyricsModeIdx = 1; // default bilingual
+        for (int i = 0; i < lyricsModeValues.length; i++) {
+            if (lyricsModeValues[i].equalsIgnoreCase(cfg.lyricsDisplayMode)) {
+                initLyricsModeIdx = i;
+                break;
+            }
+        }
+        segLyricsMode.setSelectedIndex(initLyricsModeIdx);
+        cardSwitches.addView(segLyricsMode, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
         swLyrics.setOnChangeListener(new Runnable() {
             @Override
             public void run() {
                 CustomAiConfig immediate = CustomAiConfig.load(activity);
                 immediate.syncLyricsToTeleprompter = swLyrics.isChecked();
+                immediate.lyricsDisplayMode = lyricsModeValues[segLyricsMode.getSelectedIndex()];
                 immediate.save(activity);
                 LyricsTeleprompterBridge.onConfigChanged(activity);
             }
         });
+        segLyricsMode.setOnChangedListener(new Runnable() {
+            @Override
+            public void run() {
+                CustomAiConfig immediate = CustomAiConfig.load(activity);
+                immediate.lyricsDisplayMode = lyricsModeValues[segLyricsMode.getSelectedIndex()];
+                immediate.save(activity);
+                if (immediate.syncLyricsToTeleprompter) {
+                    LyricsTeleprompterBridge.syncNow(activity, null);
+                }
+            }
+        });
+
+        LinearLayout promBtnRow = new LinearLayout(activity);
+        promBtnRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams promRowLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        promRowLp.topMargin = dp(activity, 8);
+        cardSwitches.addView(promBtnRow, promRowLp);
 
         Button btnSyncLyricsNow = makePillBtn(
-                activity, "🎵 立即同步当前歌曲歌词到眼镜", COL_EMERALD, COL_EMERALD_BRIGHT, 12f);
-        btnSyncLyricsNow.setPadding(dp(activity, 10), dp(activity, 9), dp(activity, 10), dp(activity, 9));
-        LinearLayout.LayoutParams syncLyrLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        syncLyrLp.topMargin = dp(activity, 8);
-        cardSwitches.addView(btnSyncLyricsNow, syncLyrLp);
+                activity, "🎵 同步当前歌词", COL_EMERALD, COL_EMERALD_BRIGHT, 11.5f);
+        btnSyncLyricsNow.setPadding(dp(activity, 8), dp(activity, 9), dp(activity, 8), dp(activity, 9));
+        Button btnPushClipNow = makePillBtn(
+                activity, "📤 剪贴板投送眼镜", COL_SKY, Color.rgb(56, 189, 248), 11.5f);
+        btnPushClipNow.setPadding(dp(activity, 8), dp(activity, 9), dp(activity, 8), dp(activity, 9));
+
+        LinearLayout.LayoutParams pb1 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        pb1.rightMargin = dp(activity, 6);
+        LinearLayout.LayoutParams pb2 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        promBtnRow.addView(btnSyncLyricsNow, pb1);
+        promBtnRow.addView(btnPushClipNow, pb2);
+
         btnSyncLyricsNow.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 swLyrics.setChecked(true, true);
                 CustomAiConfig immediate = CustomAiConfig.load(activity);
                 immediate.syncLyricsToTeleprompter = true;
+                immediate.lyricsDisplayMode = lyricsModeValues[segLyricsMode.getSelectedIndex()];
                 immediate.save(activity);
                 SystemMediaBridge.TrackInfo cur = SystemMediaBridge.getCurrentTrack(activity);
                 final String songLabel = (cur != null && cur.hasSong()) ? cur.formatSongDisplay() : "等待当前播放器曲目";
                 LyricsTeleprompterBridge.syncNow(activity, null);
-                Toast.makeText(activity, "🎤 已触发眼镜提词器歌词同步：" + songLabel, Toast.LENGTH_SHORT).show();
+                Toast.makeText(activity, "🎤 已触发(" + LyricsTeleprompterBridge.formatDisplayModeLabel(immediate.lyricsDisplayMode)
+                        + ")同步：" + songLabel, Toast.LENGTH_SHORT).show();
+            }
+        });
+        btnPushClipNow.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                ClipboardManager cm = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
+                if (cm == null || !cm.hasPrimaryClip() || cm.getPrimaryClip() == null
+                        || cm.getPrimaryClip().getItemCount() == 0) {
+                    Toast.makeText(activity, "剪贴板为空，请先复制文本或提纲", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                CharSequence cs = cm.getPrimaryClip().getItemAt(0).coerceToText(activity);
+                String clip = cs != null ? cs.toString().trim() : "";
+                if (clip.isEmpty()) {
+                    Toast.makeText(activity, "剪贴板无文本内容", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                String res = LyricsTeleprompterBridge.pushCustomTextToGlasses(activity, "剪贴板速读", clip);
+                Toast.makeText(activity, "📤 " + res, Toast.LENGTH_SHORT).show();
             }
         });
 
@@ -772,6 +841,113 @@ public final class CustomAiSettingsDialog {
         utilRow.addView(btnImport, u2);
         utilRow.addView(btnClear, u3);
 
+        // ==================== Card 5: Skills & MCP Extensions ====================
+        LinearLayout cardMcpSkills = addCardSection(activity, root, "🧩 Skills 技能与 MCP 扩展（可插拔对接）");
+
+        final ToggleRow swMcpSkills = new ToggleRow(
+                activity,
+                "启用 Skills 与 MCP 工具调用",
+                "支持自定义模型通过 Function Calling 调用本机技能、HTTP Webhook 与标准 MCP Server",
+                cfg.enableMcpAndSkills);
+        cardMcpSkills.addView(swMcpSkills);
+        addHairlineDivider(activity, cardMcpSkills, 0);
+
+        final ToggleRow swBuiltinSkills = new ToggleRow(
+                activity,
+                "启用内置本机技能 (Built-in Skills)",
+                "包含：提纲/文本投送到眼镜提词器、手机剪贴板读写、手机电量与播放状态查询",
+                cfg.enableBuiltinSkills);
+        cardMcpSkills.addView(swBuiltinSkills);
+        addHairlineDivider(activity, cardMcpSkills, 4);
+
+        addFieldLabel(activity, cardMcpSkills,
+                "MCP Servers JSON（Streamable HTTP；兼容数组或 {\"mcpServers\":{...}} 格式）", true);
+        final EditText etMcpServers = makeEdit(
+                activity, "[{\"name\":\"my_mcp\",\"url\":\"https://.../mcp\"}]", cfg.mcpServersJson,
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE, false);
+        etMcpServers.setMinLines(2);
+        etMcpServers.setMaxLines(5);
+        cardMcpSkills.addView(etMcpServers);
+
+        LinearLayout mcpActionRow = new LinearLayout(activity);
+        mcpActionRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams maLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        maLp.topMargin = dp(activity, 6);
+        cardMcpSkills.addView(mcpActionRow, maLp);
+
+        Button btnMcpTpl = makePillBtn(activity, "➕ 填入 MCP 模板", COL_SLATE_BTN, COL_BORDER_INPUT, 11.5f);
+        Button btnProbeMcp = makePillBtn(activity, "🔍 探测 MCP 工具", COL_SKY, Color.rgb(56, 189, 248), 11.5f);
+        LinearLayout.LayoutParams m1Lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        m1Lp.rightMargin = dp(activity, 6);
+        LinearLayout.LayoutParams m2Lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        mcpActionRow.addView(btnMcpTpl, m1Lp);
+        mcpActionRow.addView(btnProbeMcp, m2Lp);
+
+        final TextView tvMcpProbe = new TextView(activity);
+        tvMcpProbe.setTextColor(COL_TEXT_PRIMARY);
+        tvMcpProbe.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
+        tvMcpProbe.setPadding(dp(activity, 10), dp(activity, 8), dp(activity, 10), dp(activity, 8));
+        tvMcpProbe.setVisibility(View.GONE);
+        LinearLayout.LayoutParams mpStatusLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        mpStatusLp.topMargin = dp(activity, 6);
+        cardMcpSkills.addView(tvMcpProbe, mpStatusLp);
+
+        btnMcpTpl.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                etMcpServers.setText(McpSkillManager.sampleMcpServersTemplate());
+            }
+        });
+        btnProbeMcp.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                final String raw = etMcpServers.getText().toString().trim();
+                setStatusBanner(activity, tvMcpProbe,
+                        Color.rgb(30, 58, 138), Color.rgb(59, 130, 246),
+                        "⏳ 正在握手并拉取 MCP tools/list...");
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        final String summary = McpSkillManager.probeAllMcpServers(raw);
+                        final boolean hasErr = summary.contains("❌");
+                        activity.runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                setStatusBanner(activity, tvMcpProbe,
+                                        hasErr ? Color.rgb(127, 29, 29) : Color.rgb(6, 78, 59),
+                                        hasErr ? Color.rgb(239, 68, 68) : COL_EMERALD_BRIGHT,
+                                        summary);
+                            }
+                        });
+                    }
+                }, "McpProbe").start();
+            }
+        });
+
+        addFieldLabel(activity, cardMcpSkills,
+                "自定义 Skills JSON（支持 Prompt 规范技能与 HTTP Webhook 动作技能）", true);
+        final EditText etCustomSkills = makeEdit(
+                activity, "[{\"name\":\"my_skill\",\"instructions\":\"...\"}]", cfg.customSkillsJson,
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE, false);
+        etCustomSkills.setMinLines(2);
+        etCustomSkills.setMaxLines(6);
+        cardMcpSkills.addView(etCustomSkills);
+
+        Button btnSkillTpl = makePillBtn(activity, "➕ 填入 Skill 示例模板（Prompt + Webhook）",
+                COL_SLATE_BTN, COL_BORDER_INPUT, 11.5f);
+        LinearLayout.LayoutParams stLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        stLp.topMargin = dp(activity, 6);
+        cardMcpSkills.addView(btnSkillTpl, stLp);
+        btnSkillTpl.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                etCustomSkills.setText(McpSkillManager.sampleCustomSkillsTemplate());
+            }
+        });
+
         final Runnable collectToConfig = new Runnable() {
             @Override
             public void run() {
@@ -781,6 +957,13 @@ public final class CustomAiSettingsDialog {
                 cfg.keepLocalHardwareControl = swKeepLocal.isChecked();
                 cfg.passThroughOfficialSkills = swSkills.isChecked();
                 cfg.syncLyricsToTeleprompter = swLyrics.isChecked();
+                int lmIdx = segLyricsMode.getSelectedIndex();
+                cfg.lyricsDisplayMode = (lmIdx >= 0 && lmIdx < lyricsModeValues.length)
+                        ? lyricsModeValues[lmIdx] : CustomAiConfig.LYRICS_MODE_BILINGUAL;
+                cfg.enableMcpAndSkills = swMcpSkills.isChecked();
+                cfg.enableBuiltinSkills = swBuiltinSkills.isChecked();
+                cfg.mcpServersJson = etMcpServers.getText().toString().trim();
+                cfg.customSkillsJson = etCustomSkills.getText().toString().trim();
                 cfg.skillRouteTimeoutMs = parseIntSafe(etRouteMs.getText().toString(), 2000);
                 cfg.showFloatingButton = swFloating.isChecked();
                 cfg.showCallToast = swToast.isChecked();
@@ -872,6 +1055,18 @@ public final class CustomAiSettingsDialog {
                     swKeepLocal.setChecked(imported.keepLocalHardwareControl, true);
                     swSkills.setChecked(imported.passThroughOfficialSkills, true);
                     swLyrics.setChecked(imported.syncLyricsToTeleprompter, true);
+                    int impLyrIdx = 1;
+                    for (int i = 0; i < lyricsModeValues.length; i++) {
+                        if (lyricsModeValues[i].equalsIgnoreCase(imported.lyricsDisplayMode)) {
+                            impLyrIdx = i;
+                            break;
+                        }
+                    }
+                    segLyricsMode.setSelectedIndex(impLyrIdx);
+                    swMcpSkills.setChecked(imported.enableMcpAndSkills, true);
+                    swBuiltinSkills.setChecked(imported.enableBuiltinSkills, true);
+                    etMcpServers.setText(imported.mcpServersJson);
+                    etCustomSkills.setText(imported.customSkillsJson);
                     etRouteMs.setText(String.valueOf(imported.skillRouteTimeoutMs));
                     swFloating.setChecked(imported.showFloatingButton, true);
                     swToast.setChecked(imported.showCallToast, true);
@@ -928,6 +1123,7 @@ public final class CustomAiSettingsDialog {
             public void onClick(View v) {
                 collectToConfig.run();
                 cfg.save(activity);
+                McpSkillManager.clearMcpCache();
                 LyricsTeleprompterBridge.onConfigChanged(activity);
                 CustomAiFloatingBadge.attachIfEnabled(activity);
                 frame.dialog.dismiss();

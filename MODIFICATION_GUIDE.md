@@ -1,8 +1,8 @@
 # 雷鸟 AI (RayNeo AI) 自定义 LLM 接口改造说明与升级指南
 
 > 适用设备：**雷鸟 io** 智能眼镜 + **小米 17 Ultra (`25128PNA1C`)**  
-> 基准官方版本：`com.rayneo.venus.pub` v1.0.20 (`versionCode=309`)  
-> 改造产物：[RayNeo_AI_1.0.20_CustomAI.apk](./RayNeo_AI_1.0.20_CustomAI.apk)
+> 基准官方版本：`com.rayneo.venus.pub` v1.0.25 (`versionCode=100250511`，向下兼容 v1.0.20)  
+> 改造产物：[RayNeo_AI_1.0.25_CustomAI.apk](./RayNeo_AI_1.0.25_CustomAI.apk)
 
 ---
 
@@ -57,7 +57,7 @@ flowchart LR
 | **MOD-03L~P** | `com.rayneo.airuntime.controller.AssistantController` | `nativeOnSpeechStatus` / `VadStatusChange` / `AudioRecordStart` / 重复 `AudioRecordEnd` / `Notify` 过滤，防止眼镜显示 3~4 字后被云端状态关闭或覆盖 | [MOD-03_AssistantController.diff](./custom_ai_mod/annotations/diffs/MOD-03_AssistantController.diff) |
 | **MOD-03Q** | `com.rayneo.airuntime.controller.AssistantController` | `startNextRound()` 扩容 `.registers 1 -> 2`，在 C++ 已停流时自动重新拉起 `startWorkflow()` | [MOD-03_AssistantController.diff](./custom_ai_mod/annotations/diffs/MOD-03_AssistantController.diff) |
 | **MOD-04A~D** | `com.rayneo.airuntime.controller.AskAITask` | `initTask` / `startTask` / `stopTask` / `releaseTask` 接管手机端 Ask AI 对话 | [MOD-04_AskAITask.diff](./custom_ai_mod/annotations/diffs/MOD-04_AskAITask.diff) |
-| **MOD-05 / 05B** | `com.rayneo.rayneo_venus_sdk_plugin.o4` | `F(String, Map)` 监听并按需拦截专属歌词槽位 `TELEPROMPTER` / `fileShareSuccess` 事件（避免官方 Flutter 报 `Manuscript missing`），`l(...)` 追踪底层收发帧，配合 `w.u(v0)` + `w.v(File, devId, SmallCore, "")` 实现 `.lrc` 歌词自动进入实时提词与 `0x08` 毫秒级无刷新同步 | [MOD-05_RayneoNetBridge_o4.diff](./custom_ai_mod/annotations/diffs/MOD-05_RayneoNetBridge_o4.diff) |
+| **MOD-05 / 05B** | `com.rayneo.rayneo_venus_sdk_plugin.o4` *(构建期自动扫描定位)* | `F(String, Map)` 监听并按需拦截专属歌词槽位 `TELEPROMPTER` / `fileShareSuccess` 事件（避免官方 Flutter 报 `Manuscript missing`），`l(...)` 追踪底层收发帧，配合 `CoreConnectHandles` 动态特征反射（自动适配 `1.0.20` 的 `w/v0/g0/h4/vb.h/wb.q` 与 `1.0.25` 的 `v/u0/f0/i4/lc.h/mc.q` 等 R8 混淆类名偏移）实现 `.lrc` 歌词自动进入实时提词与 `0x08` 毫秒级无刷新同步 | [MOD-05_RayneoNetBridge_o4.diff](./custom_ai_mod/annotations/diffs/MOD-05_RayneoNetBridge_o4.diff) |
 
 汇总差异文件：[ALL_MODIFICATIONS.diff](./custom_ai_mod/annotations/diffs/ALL_MODIFICATIONS.diff)
 
@@ -68,7 +68,7 @@ flowchart LR
 1. **首次安装与后续更新（直接覆盖安装，无需卸载）**：
    - 包名保持官方 `com.rayneo.venus.pub`，签名固定使用项目内置密钥库 [rayneo_custom_ai.jks](./custom_ai_mod/keys/rayneo_custom_ai.jks)。
    - **重要**：一旦手机上已安装本项目的自定义版本，后续每次更新均**直接覆盖安装**即可（切勿卸载），原有登录状态、**雷鸟 io 蓝牙配对**、API Key 与调用历史全部完整保留。
-   - 若通过手机「文件管理 -> 下载 (Download)」点击 `RayNeo_AI_1.0.20_CustomAI.apk` 安装并弹出小米「安全守护」提示，选择「继续安装 / 了解风险仍安装」完成覆盖更新即可。
+   - 若通过手机「文件管理 -> 下载 (Download)」点击 `RayNeo_AI_1.0.25_CustomAI.apk` 安装并弹出小米「安全守护」提示，选择「继续安装 / 了解风险仍安装」完成覆盖更新即可。
 2. **打开自定义 API 配置面板与调用历史（两种方式）**：
    - **方式 A**：点击手机端雷鸟 App 右侧/边缘的可拖拽悬浮按钮（空闲显示 `⚡LLM` / `⚡Resp`，调用中实时显示 `⚡请求中…` / `⚡输出中…` / `⚡播报中…`）。
    - **方式 B**：在 App 主界面 **1.5 秒内连按 3 次手机「音量 +」键**。

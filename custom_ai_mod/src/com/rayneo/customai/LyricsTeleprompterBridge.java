@@ -7,12 +7,6 @@ import android.os.HandlerThread;
 import android.os.SystemClock;
 import android.util.Log;
 
-import com.ffalconxr.mercury.coreconnect.b;
-import com.ffalconxr.mercury.coreconnect.g0;
-import com.ffalconxr.mercury.coreconnect.v0;
-import com.ffalconxr.mercury.coreconnect.w;
-import com.rayneo.rayneo_venus_sdk_plugin.h4;
-import com.rayneo.rayneo_venus_sdk_plugin.o4;
 import kotlin.jvm.functions.Function2;
 
 import java.io.ByteArrayOutputStream;
@@ -20,6 +14,10 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
@@ -70,10 +68,20 @@ public final class LyricsTeleprompterBridge {
     public static final int MSG_CHECK_STATE = 0x0A;
     public static final int MSG_TEMPLE_STATE = 0x0B;
 
+    // Lyrics display modes
+    public static final String MODE_ORIGINAL = CustomAiConfig.LYRICS_MODE_ORIGINAL;
+    public static final String MODE_BILINGUAL = CustomAiConfig.LYRICS_MODE_BILINGUAL;
+    public static final String MODE_ROMAJI = CustomAiConfig.LYRICS_MODE_ROMAJI;
+    public static final String MODE_TRILINGUAL = CustomAiConfig.LYRICS_MODE_TRILINGUAL;
+
     // Voice command actions
     public static final int CMD_NONE = 0;
     public static final int CMD_ENABLE_SYNC = 1;
     public static final int CMD_DISABLE_SYNC = 2;
+    public static final int CMD_MODE_ORIGINAL = 3;
+    public static final int CMD_MODE_BILINGUAL = 4;
+    public static final int CMD_MODE_ROMAJI = 5;
+    public static final int CMD_MODE_TRILINGUAL = 6;
 
     // Session state machine
     private static final int SESSION_IDLE = 0;
@@ -115,6 +123,45 @@ public final class LyricsTeleprompterBridge {
     private static final Pattern PAT_WAKE_PREFIX = Pattern.compile(
             "^(?:小雷小雷|小雷|嘿小雷|你好小雷)[，,、\\s]*");
 
+    private static final Pattern PAT_CMD_TRILINGUAL = Pattern.compile(
+            "^(?:请|麻烦|帮我|给我|替我)?\\s*"
+                    + "(?:"
+                    + "(?:打开|开启|切换(?:到|成)?|显示|用)(?:一下)?(?:三语歌词|双语(?:加|和|带)罗马音(?:歌词)?|罗马音(?:加|和|带)(?:双语|翻译)(?:歌词)?|(?:翻译|中文)(?:和|加|与)罗马音(?:歌词)?)"
+                    + "|同时显示(?:歌词)?(?:翻译|双语)(?:和|与|及)罗马音"
+                    + "|同时显示罗马音(?:和|与|及)(?:翻译|双语)"
+                    + ")"
+                    + "(?:吧|呀|啊|呗|模式)?$",
+            Pattern.CASE_INSENSITIVE);
+
+    private static final Pattern PAT_CMD_ROMAJI = Pattern.compile(
+            "^(?:请|麻烦|帮我|给我|替我)?\\s*"
+                    + "(?:"
+                    + "(?:打开|开启|切换(?:到|成)?|显示|看看)(?:一下)?(?:日语|日文|歌曲|歌词)?(?:的)?罗马音(?:歌词|注音|模式|同步|联动)?"
+                    + "|歌词(?:显示|开启|加上|带上)罗马音"
+                    + ")"
+                    + "(?:吧|呀|啊|呗)?$",
+            Pattern.CASE_INSENSITIVE);
+
+    private static final Pattern PAT_CMD_BILINGUAL = Pattern.compile(
+            "^(?:请|麻烦|帮我|给我|替我)?\\s*"
+                    + "(?:"
+                    + "(?:打开|开启|切换(?:到|成)?|显示|看看)(?:一下)?(?:双语|中英|中日|中韩|中外|翻译|中文翻译|对照)歌词(?:联动|同步|显示|模式)?"
+                    + "|(?:打开|开启|显示)(?:一下)?歌词(?:的)?(?:中文)?翻译"
+                    + "|歌词(?:显示|开启|加上|带上)(?:中文)?翻译"
+                    + ")"
+                    + "(?:吧|呀|啊|呗)?$",
+            Pattern.CASE_INSENSITIVE);
+
+    private static final Pattern PAT_CMD_ORIGINAL_ONLY = Pattern.compile(
+            "^(?:请|麻烦|帮我|给我|替我)?\\s*"
+                    + "(?:"
+                    + "(?:只|仅)(?:看|显示)(?:原词|原文歌词|原版歌词|原文)"
+                    + "|(?:关闭|关掉|隐藏|取消)(?:双语歌词|歌词翻译|翻译歌词|罗马音|罗马音歌词)"
+                    + "|切换(?:到|成)?(?:仅)?原词(?:模式)?"
+                    + ")"
+                    + "(?:吧|呀|啊|呗)?$",
+            Pattern.CASE_INSENSITIVE);
+
     private static final Pattern PAT_CMD_ENABLE = Pattern.compile(
             "^(?:请|麻烦|帮我|给我|替我)?\\s*"
                     + "(?:"
@@ -150,6 +197,22 @@ public final class LyricsTeleprompterBridge {
 
     // ==================== Data Models ====================
 
+    public static final class LrcBundle {
+        public final String lrc;
+        public final String tlyric;
+        public final String romalrc;
+
+        public LrcBundle(String lrc, String tlyric, String romalrc) {
+            this.lrc = lrc == null ? "" : lrc;
+            this.tlyric = tlyric == null ? "" : tlyric;
+            this.romalrc = romalrc == null ? "" : romalrc;
+        }
+
+        public boolean hasMainLrc() {
+            return !lrc.isEmpty() && lrc.contains("[");
+        }
+    }
+
     public static final class LyricsManuscript {
         public final String trackKey;
         public final String did;
@@ -158,10 +221,13 @@ public final class LyricsTeleprompterBridge {
         public final String[] lines;
         public final long[] lineTimesMs;
         public final int[] lineByteOffsets;
+        public final boolean[] companionFlags;
         public final byte[] utf8Bytes;
         public final String checksum;
         public final boolean hasSyncedLyrics;
         public final String sourcePlatform;
+        public final String displayMode;
+        public final boolean isCustomNote;
 
         public LyricsManuscript(
                 String trackKey,
@@ -176,6 +242,26 @@ public final class LyricsTeleprompterBridge {
                 boolean hasSyncedLyrics,
                 String sourcePlatform
         ) {
+            this(trackKey, did, title, artist, lines, lineTimesMs, lineByteOffsets,
+                    null, utf8Bytes, checksum, hasSyncedLyrics, sourcePlatform, MODE_ORIGINAL, false);
+        }
+
+        public LyricsManuscript(
+                String trackKey,
+                String did,
+                String title,
+                String artist,
+                String[] lines,
+                long[] lineTimesMs,
+                int[] lineByteOffsets,
+                boolean[] companionFlags,
+                byte[] utf8Bytes,
+                String checksum,
+                boolean hasSyncedLyrics,
+                String sourcePlatform,
+                String displayMode,
+                boolean isCustomNote
+        ) {
             this.trackKey = trackKey;
             this.did = did;
             this.title = title;
@@ -183,10 +269,26 @@ public final class LyricsTeleprompterBridge {
             this.lines = lines;
             this.lineTimesMs = lineTimesMs;
             this.lineByteOffsets = lineByteOffsets;
+            this.companionFlags = companionFlags != null ? companionFlags : new boolean[lines != null ? lines.length : 0];
             this.utf8Bytes = utf8Bytes;
             this.checksum = checksum;
             this.hasSyncedLyrics = hasSyncedLyrics;
             this.sourcePlatform = sourcePlatform == null ? "" : sourcePlatform;
+            this.displayMode = CustomAiConfig.normalizeLyricsMode(displayMode);
+            this.isCustomNote = isCustomNote;
+        }
+
+        /**
+         * Resolves the active primary anchor line index at {@code posMs}, snapping backwards across
+         * companion sub-lines (romaji / translation) so 0x08 ProgressUpdate keeps the full lyric block
+         * (original + romaji + translation) visible together at the top of the glasses HUD.
+         */
+        public int findCueLineIndex(long posMs) {
+            int idx = findActiveLineIndex(this.lineTimesMs, posMs);
+            while (idx > 0 && idx < this.companionFlags.length && this.companionFlags[idx]) {
+                idx--;
+            }
+            return idx;
         }
     }
 
@@ -214,7 +316,9 @@ public final class LyricsTeleprompterBridge {
     // ==================== Runtime State ====================
 
     private static volatile Application appContext;
-    private static volatile o4 lastSeenBridge;
+    private static volatile Object lastSeenBridge;
+    private static volatile String configuredBridgeClassName = "com.rayneo.rayneo_venus_sdk_plugin.o4";
+    private static volatile CoreConnectHandles cachedHandles;
     private static volatile String lastSeenDeviceId = "";
     private static volatile HandlerThread workerThread;
     private static volatile Handler workerHandler;
@@ -233,6 +337,8 @@ public final class LyricsTeleprompterBridge {
 
     // State accessed exclusively on workerHandler thread
     private static LyricsManuscript activeManuscript;
+    private static LyricsManuscript customOverrideManuscript;
+    private static String customOverrideBaselineTrackKey = "";
     private static int sessionState = SESSION_IDLE;
     private static boolean sessionSnippetMode = false;
     private static int lastSentLineIdx = -1;
@@ -329,6 +435,8 @@ public final class LyricsTeleprompterBridge {
         h.post(new Runnable() {
             @Override
             public void run() {
+                customOverrideManuscript = null;
+                customOverrideBaselineTrackKey = "";
                 stoppedByGlassesTrackKey = "";
                 foreignTeleprompterActive = false;
                 backoffUntilUptimeMs = 0L;
@@ -337,9 +445,11 @@ public final class LyricsTeleprompterBridge {
                 forcePushUntilUptimeMs = SystemClock.uptimeMillis() + 15000L;
                 if (sessionState != SESSION_IDLE && activeManuscript != null) {
                     sendStopPacket(activeManuscript, computeCurrentPageOffset(activeManuscript, 0L));
+                    activeManuscript = null;
                     resetSessionVars();
                     scheduleTick(280L);
                 } else {
+                    activeManuscript = null;
                     onWorkerTick();
                 }
                 if (onUiDone != null) {
@@ -347,6 +457,52 @@ public final class LyricsTeleprompterBridge {
                 }
             }
         });
+    }
+
+    /**
+     * Pushes an arbitrary custom text / AI-generated outline / clipboard note onto the glasses
+     * Teleprompter HUD. If glasses TTS / voice session is currently active, waits automatically
+     * until voiceAssistantBusy clears so the HUD never collides with voice announcements.
+     */
+    public static String pushCustomTextToGlasses(Context ctx, String title, String content) {
+        if (ctx != null && appContext == null && ctx.getApplicationContext() instanceof Application) {
+            init((Application) ctx.getApplicationContext());
+        }
+        final LyricsManuscript noteMs = buildCustomNoteManuscript(title, content);
+        Handler h = workerHandler;
+        if (h == null) {
+            return "眼镜提词器工作线程尚未初始化";
+        }
+        final Context appCtx = ctx != null ? ctx.getApplicationContext() : appContext;
+        h.post(new Runnable() {
+            @Override
+            public void run() {
+                String curSongKey = "";
+                if (appCtx != null) {
+                    SystemMediaBridge.TrackInfo t = SystemMediaBridge.getCurrentTrack(appCtx);
+                    if (t != null && t.hasSong()) {
+                        curSongKey = normalizeTrackKey(t.title, t.artist);
+                    }
+                }
+                customOverrideManuscript = noteMs;
+                customOverrideBaselineTrackKey = curSongKey;
+                stoppedByGlassesTrackKey = "";
+                foreignTeleprompterActive = false;
+                backoffUntilUptimeMs = 0L;
+                handshakeAttempts = 0;
+                conflictRetried = false;
+                forcePushUntilUptimeMs = SystemClock.uptimeMillis() + 30000L;
+                if (sessionState != SESSION_IDLE && activeManuscript != null) {
+                    sendStopPacket(activeManuscript, computeCurrentPageOffset(activeManuscript, 0L));
+                    activeManuscript = null;
+                    resetSessionVars();
+                    scheduleTick(300L);
+                } else {
+                    onWorkerTick();
+                }
+            }
+        });
+        return "已将《" + noteMs.title + "》（共 " + noteMs.lines.length + " 行）加入眼镜提词器推送队列";
     }
 
     public static void notifyMediaChanged() {
@@ -366,6 +522,25 @@ public final class LyricsTeleprompterBridge {
 
     // ==================== Voice Command Matching ====================
 
+    public static String formatDisplayModeLabel(String mode) {
+        String m = CustomAiConfig.normalizeLyricsMode(mode);
+        if (MODE_ORIGINAL.equals(m)) return "仅原词";
+        if (MODE_ROMAJI.equals(m)) return "原词+罗马音";
+        if (MODE_TRILINGUAL.equals(m)) return "原词+罗马音+译文";
+        return "双语对照";
+    }
+
+    public static String voiceCommandActionLabel(int cmd) {
+        switch (cmd) {
+            case CMD_DISABLE_SYNC: return "关闭歌词提词联动";
+            case CMD_MODE_ORIGINAL: return "切换仅原词模式";
+            case CMD_MODE_BILINGUAL: return "开启双语对照歌词";
+            case CMD_MODE_ROMAJI: return "开启罗马音歌词";
+            case CMD_MODE_TRILINGUAL: return "开启三语全显歌词";
+            default: return "开启歌词提词联动";
+        }
+    }
+
     public static int matchVoiceCommand(String rawQuery) {
         if (rawQuery == null) return CMD_NONE;
         String s = rawQuery.trim();
@@ -375,6 +550,18 @@ public final class LyricsTeleprompterBridge {
         s = PAT_WAKE_PREFIX.matcher(s).replaceFirst("").trim();
         if (s.isEmpty()) return CMD_NONE;
 
+        if (PAT_CMD_ORIGINAL_ONLY.matcher(s).matches()) {
+            return CMD_MODE_ORIGINAL;
+        }
+        if (PAT_CMD_TRILINGUAL.matcher(s).matches()) {
+            return CMD_MODE_TRILINGUAL;
+        }
+        if (PAT_CMD_ROMAJI.matcher(s).matches()) {
+            return CMD_MODE_ROMAJI;
+        }
+        if (PAT_CMD_BILINGUAL.matcher(s).matches()) {
+            return CMD_MODE_BILINGUAL;
+        }
         if (PAT_CMD_DISABLE.matcher(s).matches()) {
             return CMD_DISABLE_SYNC;
         }
@@ -387,20 +574,7 @@ public final class LyricsTeleprompterBridge {
     public static String executeVoiceCommand(Context ctx, int cmd, long logId) {
         if (ctx == null) return "上下文为空";
         CustomAiConfig cfg = CustomAiConfig.load(ctx);
-        if (cmd == CMD_ENABLE_SYNC) {
-            cfg.syncLyricsToTeleprompter = true;
-            cfg.save(ctx);
-            syncNow(ctx, null);
-            SystemMediaBridge.TrackInfo ti = SystemMediaBridge.getCurrentTrack(ctx);
-            if (logId > 0L) {
-                CustomAiCallLog.addEvent(logId, "LYRICS_SYNC_ENABLED(track="
-                        + (ti != null ? ti.formatSongDisplay() : "none") + ")");
-            }
-            if (ti != null && ti.hasSong()) {
-                return "已开启眼镜歌词联动，正在同步：" + ti.formatSongDisplay();
-            }
-            return "已开启眼镜歌词提词器联动，播放音乐时将自动同步滚动歌词";
-        } else if (cmd == CMD_DISABLE_SYNC) {
+        if (cmd == CMD_DISABLE_SYNC) {
             cfg.syncLyricsToTeleprompter = false;
             cfg.save(ctx);
             onConfigChanged(ctx);
@@ -408,6 +582,34 @@ public final class LyricsTeleprompterBridge {
                 CustomAiCallLog.addEvent(logId, "LYRICS_SYNC_DISABLED");
             }
             return "已关闭眼镜歌词提词器联动";
+        }
+        if (cmd == CMD_MODE_ORIGINAL) {
+            cfg.lyricsDisplayMode = MODE_ORIGINAL;
+        } else if (cmd == CMD_MODE_BILINGUAL) {
+            cfg.lyricsDisplayMode = MODE_BILINGUAL;
+        } else if (cmd == CMD_MODE_ROMAJI) {
+            cfg.lyricsDisplayMode = MODE_ROMAJI;
+        } else if (cmd == CMD_MODE_TRILINGUAL) {
+            cfg.lyricsDisplayMode = MODE_TRILINGUAL;
+        }
+        if (cmd == CMD_ENABLE_SYNC
+                || cmd == CMD_MODE_ORIGINAL
+                || cmd == CMD_MODE_BILINGUAL
+                || cmd == CMD_MODE_ROMAJI
+                || cmd == CMD_MODE_TRILINGUAL) {
+            cfg.syncLyricsToTeleprompter = true;
+            cfg.save(ctx);
+            syncNow(ctx, null);
+            String modeLabel = formatDisplayModeLabel(cfg.lyricsDisplayMode);
+            SystemMediaBridge.TrackInfo ti = SystemMediaBridge.getCurrentTrack(ctx);
+            if (logId > 0L) {
+                CustomAiCallLog.addEvent(logId, "LYRICS_SYNC_ENABLED(mode=" + cfg.lyricsDisplayMode
+                        + ", track=" + (ti != null ? ti.formatSongDisplay() : "none") + ")");
+            }
+            if (ti != null && ti.hasSong()) {
+                return "已开启眼镜歌词联动（" + modeLabel + "），正在同步：" + ti.formatSongDisplay();
+            }
+            return "已开启眼镜歌词提词器联动（" + modeLabel + "），播放音乐时将自动同步滚动歌词";
         }
         return "";
     }
@@ -421,9 +623,7 @@ public final class LyricsTeleprompterBridge {
      */
     public static boolean onRayneoNetEvent(final Object bridgeObj, final String eventName, final Map data) {
         try {
-            if (bridgeObj instanceof o4) {
-                lastSeenBridge = (o4) bridgeObj;
-            }
+            captureBridgeInstance(bridgeObj);
             if (eventName == null) return false;
 
             if ("messageReceived".equals(eventName)) {
@@ -522,9 +722,7 @@ public final class LyricsTeleprompterBridge {
             final Map meta,
             final byte[] rawPayload) {
         try {
-            if (bridgeObj instanceof o4) {
-                lastSeenBridge = (o4) bridgeObj;
-            }
+            captureBridgeInstance(bridgeObj);
             String biz = "";
             String msgId = "";
             String devId = "";
@@ -607,13 +805,7 @@ public final class LyricsTeleprompterBridge {
 
         try {
             CustomAiConfig cfg = CustomAiConfig.load(app);
-            if (!cfg.syncLyricsToTeleprompter) {
-                if (sessionState != SESSION_IDLE) {
-                    stopSessionOnGlasses("配置已关闭");
-                }
-                lastStatusSummary = "未启用";
-                return;
-            }
+            final String desiredMode = CustomAiConfig.normalizeLyricsMode(cfg.lyricsDisplayMode);
 
             // Safety auto-expire for voiceAssistantBusy
             if (voiceAssistantBusy && SystemClock.uptimeMillis() - voiceBusySinceUptimeMs > VOICE_BUSY_MAX_MS) {
@@ -625,6 +817,87 @@ public final class LyricsTeleprompterBridge {
             }
 
             SystemMediaBridge.TrackInfo track = SystemMediaBridge.getCurrentTrack(app);
+            String liveTrackKey = (track != null && track.hasSong())
+                    ? normalizeTrackKey(track.title, track.artist) : "";
+
+            // Handle custom note / Skill teleprompter push (works even when music lyrics sync is off!)
+            if (customOverrideManuscript != null) {
+                if (cfg.syncLyricsToTeleprompter && !liveTrackKey.isEmpty()
+                        && !liveTrackKey.equals(customOverrideBaselineTrackKey)
+                        && track != null && track.isPlaying()) {
+                    // User switched to a new playing song -> yield back to live music lyrics
+                    customOverrideManuscript = null;
+                    customOverrideBaselineTrackKey = "";
+                } else {
+                    if (foreignTeleprompterActive) {
+                        lastStatusSummary = "原生提词器使用中（已自动避让）";
+                        scheduleTick(TICK_IDLE_MS);
+                        return;
+                    }
+                    String devId = resolveConnectedGlassesDeviceId();
+                    if (devId.isEmpty()) {
+                        lastStatusSummary = "等待眼镜蓝牙连接（待投送提词）…";
+                        scheduleTick(TICK_IDLE_MS);
+                        return;
+                    }
+                    if (activeManuscript != customOverrideManuscript) {
+                        if (sessionState != SESSION_IDLE && activeManuscript != null) {
+                            sendStopPacket(activeManuscript, computeCurrentPageOffset(activeManuscript, 0L));
+                            activeManuscript = null;
+                            resetSessionVars();
+                            backoffUntilUptimeMs = SystemClock.uptimeMillis() + TRACK_SWITCH_STOP_SETTLE_MS;
+                            scheduleTick(TRACK_SWITCH_STOP_SETTLE_MS + 40L);
+                            return;
+                        }
+                        activeManuscript = customOverrideManuscript;
+                        resetSessionVars();
+                        backoffUntilUptimeMs = 0L;
+                    }
+                    long nowNote = SystemClock.uptimeMillis();
+                    if (nowNote < backoffUntilUptimeMs) {
+                        scheduleTick(Math.min(1000L, Math.max(80L, backoffUntilUptimeMs - nowNote)));
+                        return;
+                    }
+                    if (sessionState == SESSION_IDLE) {
+                        startSessionForManuscript(activeManuscript, 0L, devId);
+                        scheduleTick(TICK_ACTIVE_MS);
+                        return;
+                    }
+                    if (sessionState == SESSION_STARTING
+                            || sessionState == SESSION_WAITING_FILE_SHARE
+                            || sessionState == SESSION_STARTING_CUEING) {
+                        if (sessionState == SESSION_STARTING_CUEING
+                                && !cueingStartScheduled
+                                && !cueingStartRetriedOnce
+                                && nowNote - stateEnteredUptimeMs > 2600L) {
+                            cueingStartRetriedOnce = true;
+                            sendCueingStartRequest(activeManuscript, devId);
+                        } else if (nowNote - stateEnteredUptimeMs > HANDSHAKE_TIMEOUT_MS) {
+                            if (handshakeAttempts < 2) {
+                                startSessionForManuscript(activeManuscript, 0L, devId);
+                            } else {
+                                sessionState = SESSION_IDLE;
+                                handshakeAttempts = 0;
+                                backoffUntilUptimeMs = nowNote + BACKOFF_RETRY_MS;
+                            }
+                        }
+                        scheduleTick(TICK_ACTIVE_MS);
+                        return;
+                    }
+                    lastStatusSummary = "提词显示中：" + activeManuscript.title;
+                    scheduleTick(TICK_IDLE_MS);
+                    return;
+                }
+            }
+
+            if (!cfg.syncLyricsToTeleprompter) {
+                if (sessionState != SESSION_IDLE) {
+                    stopSessionOnGlasses("配置已关闭");
+                }
+                lastStatusSummary = "未启用";
+                return;
+            }
+
             if (track == null || !track.hasSong()) {
                 if (sessionState != SESSION_IDLE) {
                     stopSessionOnGlasses("无正在播放的歌曲");
@@ -634,7 +907,7 @@ public final class LyricsTeleprompterBridge {
                 return;
             }
 
-            String trackKey = normalizeTrackKey(track.title, track.artist);
+            String trackKey = liveTrackKey;
 
             // If user manually exited teleprompter on glasses temple for this song, respect until next song
             if (trackKey.equals(stoppedByGlassesTrackKey)) {
@@ -661,8 +934,11 @@ public final class LyricsTeleprompterBridge {
 
             boolean forcePush = SystemClock.uptimeMillis() < forcePushUntilUptimeMs;
 
-            // Track changed?
-            if (activeManuscript == null || !trackKey.equals(activeManuscript.trackKey)) {
+            // Track OR displayMode changed?
+            if (activeManuscript == null
+                    || activeManuscript.isCustomNote
+                    || !trackKey.equals(activeManuscript.trackKey)
+                    || !desiredMode.equals(activeManuscript.displayMode)) {
                 if (!isPlaying && !forcePush && sessionState == SESSION_IDLE) {
                     // Music is paused and no session open yet -> wait until user hits play
                     lastStatusSummary = "音乐已暂停：" + track.formatSongDisplay();
@@ -678,7 +954,7 @@ public final class LyricsTeleprompterBridge {
                     scheduleTick(TRACK_SWITCH_STOP_SETTLE_MS + 40L);
                     return;
                 }
-                LyricsManuscript ms = getOrFetchManuscript(track);
+                LyricsManuscript ms = getOrFetchManuscript(track, desiredMode);
                 activeManuscript = ms;
                 resetSessionVars();
                 backoffUntilUptimeMs = 0L;
@@ -747,20 +1023,20 @@ public final class LyricsTeleprompterBridge {
                 return;
             }
 
-            if (sessionState == SESSION_ACTIVE && activeManuscript != null) {
+            if (sessionState == SESSION_ACTIVE && activeManuscript != null && !activeManuscript.isCustomNote) {
                 if (now < cueingReadyAtUptimeMs) {
                     scheduleTick(Math.min(TICK_ACTIVE_MS, Math.max(60L, cueingReadyAtUptimeMs - now)));
                     return;
                 }
-                int lineIdx = findActiveLineIndex(activeManuscript.lineTimesMs, interpPosMs);
+                int lineIdx = activeManuscript.findCueLineIndex(interpPosMs);
                 if (lineIdx != lastSentLineIdx && (now - lastProgressSentUptimeMs >= MIN_PROGRESS_INTERVAL_MS)) {
                     sendProgressUpdatePacket(activeManuscript, lineIdx);
                     lastSentLineIdx = lineIdx;
                     lastProgressSentUptimeMs = now;
                     String curLine = (lineIdx >= 0 && lineIdx < activeManuscript.lines.length)
                             ? activeManuscript.lines[lineIdx] : "";
-                    lastStatusSummary = "同步中：" + track.formatSongDisplay()
-                            + (curLine.isEmpty() ? "" : (" · " + curLine));
+                    lastStatusSummary = "同步中(" + formatDisplayModeLabel(activeManuscript.displayMode) + ")："
+                            + track.formatSongDisplay() + (curLine.isEmpty() ? "" : (" · " + curLine));
                 }
             }
         } catch (Throwable t) {
@@ -772,7 +1048,7 @@ public final class LyricsTeleprompterBridge {
 
     private static void startSessionForManuscript(LyricsManuscript ms, long posMs, String deviceId) {
         if (ms == null) return;
-        int lineIdx = findActiveLineIndex(ms.lineTimesMs, posMs);
+        int lineIdx = ms.isCustomNote ? 0 : ms.findCueLineIndex(posMs);
 
         attemptSeq++;
         handshakeAttempts++;
@@ -824,12 +1100,13 @@ public final class LyricsTeleprompterBridge {
             try (FileOutputStream fos = new FileOutputStream(f)) {
                 fos.write(ms.utf8Bytes);
             }
-            w wInst = resolveCoreConnectW();
-            if (wInst != null) {
+            CoreConnectHandles handles = resolveCoreConnectHandles();
+            Object mgrInst = handles != null ? handles.resolveMgrInstance(lastSeenBridge) : null;
+            if (handles != null && mgrInst != null) {
                 fileShareDoneForAttempt = false;
                 readyCode7ReceivedForAttempt = false;
                 cueingStartScheduled = false;
-                String taskId = wInst.v(f, deviceId, wb.q.SmallCore, "");
+                String taskId = handles.invokeFileShare(mgrInst, f, deviceId);
                 if (taskId != null && !taskId.isEmpty()) {
                     pendingFileTaskId = taskId;
                     sessionSnippetMode = false;
@@ -924,15 +1201,15 @@ public final class LyricsTeleprompterBridge {
 
         // Compute live playback position + 3s countdown lookahead so when the 3s HUD countdown finishes,
         // the glasses land directly on the exact lyric line being sung at that moment!
-        int lineIdx = Math.max(0, Math.min(lastSentLineIdx, ms.lineByteOffsets.length - 1));
+        int lineIdx = ms.isCustomNote ? 0 : Math.max(0, Math.min(lastSentLineIdx, ms.lineByteOffsets.length - 1));
         Application app = appContext;
-        if (app != null) {
+        if (app != null && !ms.isCustomNote) {
             SystemMediaBridge.TrackInfo liveTrack = SystemMediaBridge.getCurrentTrack(app);
             if (liveTrack != null && liveTrack.hasSong()
                     && normalizeTrackKey(liveTrack.title, liveTrack.artist).equals(ms.trackKey)) {
                 long targetMs = liveTrack.getInterpolatedPositionMs()
                         + (liveTrack.isPlaying() ? (HUD_COUNTDOWN * 1000L + LYRIC_LEAD_COMPENSATION_MS) : 0L);
-                lineIdx = findActiveLineIndex(ms.lineTimesMs, targetMs);
+                lineIdx = ms.findCueLineIndex(targetMs);
             }
         }
         int hiOff = ms.lineByteOffsets[lineIdx];
@@ -1216,10 +1493,16 @@ public final class LyricsTeleprompterBridge {
                                 deviceId, true);
                     }
                     if (activeManuscript != null) {
-                        stoppedByGlassesTrackKey = activeManuscript.trackKey;
+                        if (activeManuscript.isCustomNote) {
+                            customOverrideManuscript = null;
+                            customOverrideBaselineTrackKey = "";
+                            activeManuscript = null;
+                        } else {
+                            stoppedByGlassesTrackKey = activeManuscript.trackKey;
+                        }
                     }
                     resetSessionVars();
-                    lastStatusSummary = "已在眼镜端退出当前歌曲歌词";
+                    lastStatusSummary = "已在眼镜端退出当前提词";
                     Log.i(TAG, "Glasses temple exited lyrics teleprompter (did=" + did + ")");
                 }
                 break;
@@ -1337,59 +1620,488 @@ public final class LyricsTeleprompterBridge {
 
     private static int computeCurrentPageOffset(LyricsManuscript ms, long posMs) {
         if (ms == null || ms.lineByteOffsets.length == 0) return 0;
-        int idx = findActiveLineIndex(ms.lineTimesMs, posMs);
+        int idx = ms.isCustomNote ? 0 : ms.findCueLineIndex(posMs);
         return ms.lineByteOffsets[idx];
     }
 
-    // ==================== CoreConnect BLE Device & Sender ====================
+    // ==================== CoreConnect BLE Device & Sender (R8-Resilient Dynamic Reflection) ====================
 
-    private static w resolveCoreConnectW() {
-        try {
-            o4 b = lastSeenBridge != null ? lastSeenBridge : o4.Q;
-            if (b != null) {
-                w inst = b.q();
-                if (inst != null) return inst;
+    /**
+     * Called at app startup (MOD-01) with the exact RayneoNetBridge class discovered by patch_apk.py
+     * so CoreConnect reflection works at t=0ms regardless of R8 class renaming across versions.
+     */
+    public static void registerBridgeClassName(String className) {
+        if (className == null) return;
+        String trimmed = className.trim();
+        if (trimmed.isEmpty()) return;
+        if (!trimmed.equals(configuredBridgeClassName)) {
+            configuredBridgeClassName = trimmed;
+            cachedHandles = null;
+        }
+    }
+
+    private static void captureBridgeInstance(Object bridgeObj) {
+        if (bridgeObj == null) return;
+        lastSeenBridge = bridgeObj;
+        CoreConnectHandles cur = cachedHandles;
+        if (cur != null && cur.bridgeClass != bridgeObj.getClass()) {
+            cachedHandles = null;
+        }
+    }
+
+    public static final class CoreConnectHandles {
+        public final Class<?> bridgeClass;
+        public final Field bridgeSingletonField;
+        public final Field activeDeviceHolderField;
+        public final Field holderIdField;
+        public final Field holderConnectedField;
+        public final Method bridgeGetMgrMethod;
+        public final Class<?> mgrClass;
+        public final Field mgrSingletonField;
+        public final Field mgrCompanionField;
+        public final Method mgrCompanionGetter;
+        public final Method mgrGetDevicesMapMethod;
+        public final Method mgrFileShareMethod;
+        public final Object smallCoreConst;
+        public final Method mgrSendBleMethod;
+        public final Constructor<?> msgCtor10;
+        public final Object teleprompterBizConst;
+        public final Object normalPriorityConst;
+
+        private volatile Class<?> cachedDevClass;
+        private volatile Field cachedDevIdField;
+        private volatile Method cachedDevConnectedMethod;
+
+        CoreConnectHandles(
+                Class<?> bridgeClass,
+                Field bridgeSingletonField,
+                Field activeDeviceHolderField,
+                Field holderIdField,
+                Field holderConnectedField,
+                Method bridgeGetMgrMethod,
+                Class<?> mgrClass,
+                Field mgrSingletonField,
+                Field mgrCompanionField,
+                Method mgrCompanionGetter,
+                Method mgrGetDevicesMapMethod,
+                Method mgrFileShareMethod,
+                Object smallCoreConst,
+                Method mgrSendBleMethod,
+                Constructor<?> msgCtor10,
+                Object teleprompterBizConst,
+                Object normalPriorityConst) {
+            this.bridgeClass = bridgeClass;
+            this.bridgeSingletonField = bridgeSingletonField;
+            this.activeDeviceHolderField = activeDeviceHolderField;
+            this.holderIdField = holderIdField;
+            this.holderConnectedField = holderConnectedField;
+            this.bridgeGetMgrMethod = bridgeGetMgrMethod;
+            this.mgrClass = mgrClass;
+            this.mgrSingletonField = mgrSingletonField;
+            this.mgrCompanionField = mgrCompanionField;
+            this.mgrCompanionGetter = mgrCompanionGetter;
+            this.mgrGetDevicesMapMethod = mgrGetDevicesMapMethod;
+            this.mgrFileShareMethod = mgrFileShareMethod;
+            this.smallCoreConst = smallCoreConst;
+            this.mgrSendBleMethod = mgrSendBleMethod;
+            this.msgCtor10 = msgCtor10;
+            this.teleprompterBizConst = teleprompterBizConst;
+            this.normalPriorityConst = normalPriorityConst;
+        }
+
+        public Object resolveBridgeInstance(Object lastSeen) {
+            if (lastSeen != null && bridgeClass.isInstance(lastSeen)) {
+                return lastSeen;
             }
-        } catch (Throwable ignored) {}
-        try {
-            if (w.h != null) return w.h;
-        } catch (Throwable ignored) {}
-        try {
-            if (w.g != null) return w.g.a();
-        } catch (Throwable ignored) {}
+            if (bridgeSingletonField != null) {
+                try {
+                    return bridgeSingletonField.get(null);
+                } catch (Throwable ignored) {}
+            }
+            return null;
+        }
+
+        public Object resolveMgrInstance(Object lastSeen) {
+            try {
+                Object b = resolveBridgeInstance(lastSeen);
+                if (b != null && bridgeGetMgrMethod != null) {
+                    Object inst = bridgeGetMgrMethod.invoke(b);
+                    if (inst != null) return inst;
+                }
+            } catch (Throwable ignored) {}
+            try {
+                if (mgrSingletonField != null) {
+                    Object inst = mgrSingletonField.get(null);
+                    if (inst != null) return inst;
+                }
+            } catch (Throwable ignored) {}
+            try {
+                if (mgrCompanionField != null && mgrCompanionGetter != null) {
+                    Object comp = mgrCompanionField.get(null);
+                    if (comp != null) {
+                        Object inst = mgrCompanionGetter.invoke(comp);
+                        if (inst != null) return inst;
+                    }
+                }
+            } catch (Throwable ignored) {}
+            return null;
+        }
+
+        public String invokeFileShare(Object mgrInst, File file, String deviceId) throws Exception {
+            Object res = mgrFileShareMethod.invoke(mgrInst, file, deviceId, smallCoreConst, "");
+            return res instanceof String ? (String) res : null;
+        }
+
+        public void invokeSendBle(
+                Object mgrInst,
+                byte[] payload,
+                String msgId,
+                String deviceId,
+                boolean needAck,
+                Function2 cb) throws Exception {
+            Object msg = msgCtor10.newInstance(
+                    payload,
+                    msgId,
+                    deviceId,
+                    teleprompterBizConst,
+                    null,
+                    normalPriorityConst,
+                    Boolean.valueOf(needAck),
+                    Boolean.FALSE,
+                    null,
+                    null);
+            mgrSendBleMethod.invoke(mgrInst, msg, cb);
+        }
+
+        public Map<?, ?> getDevicesMap() {
+            if (mgrGetDevicesMapMethod == null) return null;
+            try {
+                Object res = mgrGetDevicesMapMethod.invoke(null);
+                if (res instanceof Map) {
+                    return (Map<?, ?>) res;
+                }
+            } catch (Throwable ignored) {}
+            return null;
+        }
+
+        public boolean inspectDeviceEntry(Object devVal, String[] outId, boolean[] outConnected) {
+            if (devVal == null) return false;
+            Class<?> dc = devVal.getClass();
+            Field idF = cachedDevIdField;
+            Method connM = cachedDevConnectedMethod;
+            if (dc != cachedDevClass || idF == null || connM == null) {
+                idF = null;
+                connM = null;
+                for (Field f : dc.getDeclaredFields()) {
+                    if (!Modifier.isStatic(f.getModifiers()) && !f.isSynthetic() && f.getType() == String.class) {
+                        f.setAccessible(true);
+                        idF = f;
+                        break;
+                    }
+                }
+                for (Method m : dc.getDeclaredMethods()) {
+                    if (!Modifier.isStatic(m.getModifiers())
+                            && m.getParameterTypes().length == 0
+                            && m.getReturnType() == boolean.class) {
+                        m.setAccessible(true);
+                        connM = m;
+                        break;
+                    }
+                }
+                if (idF != null && connM != null) {
+                    cachedDevIdField = idF;
+                    cachedDevConnectedMethod = connM;
+                    cachedDevClass = dc;
+                }
+            }
+            if (idF == null || connM == null) return false;
+            try {
+                Object rawId = idF.get(devVal);
+                Object rawConn = connM.invoke(devVal);
+                outId[0] = rawId instanceof String ? safe((String) rawId) : "";
+                outConnected[0] = Boolean.TRUE.equals(rawConn);
+                return true;
+            } catch (Throwable ignored) {
+                return false;
+            }
+        }
+    }
+
+    private static Object findEnumConst(Class<?> enumCls, String name) {
+        if (enumCls == null || !enumCls.isEnum()) return null;
+        Object[] constants = enumCls.getEnumConstants();
+        if (constants == null) return null;
+        for (Object c : constants) {
+            if (c instanceof Enum && name.equals(((Enum<?>) c).name())) {
+                return c;
+            }
+        }
         return null;
     }
 
+    public static CoreConnectHandles resolveCoreConnectHandlesForClass(Class<?> bridgeCls) {
+        if (bridgeCls == null) return null;
+        try {
+            Field bridgeSingleton = null;
+            Field holderField = null;
+            Field holderId = null;
+            Field holderConn = null;
+
+            for (Field f : bridgeCls.getDeclaredFields()) {
+                int mod = f.getModifiers();
+                if (Modifier.isStatic(mod)) {
+                    if (f.getType() == bridgeCls && bridgeSingleton == null) {
+                        f.setAccessible(true);
+                        bridgeSingleton = f;
+                    }
+                } else if (!f.isSynthetic()) {
+                    Class<?> ft = f.getType();
+                    String fn = ft.getName();
+                    if (!ft.isPrimitive() && !ft.isArray() && ft != bridgeCls
+                            && !fn.startsWith("java.") && !fn.startsWith("android.")
+                            && !fn.startsWith("kotlinx.") && !fn.startsWith("androidx.")) {
+                        List<Field> instFields = new ArrayList<>();
+                        for (Field hf : ft.getDeclaredFields()) {
+                            if (!Modifier.isStatic(hf.getModifiers()) && !hf.isSynthetic()) {
+                                instFields.add(hf);
+                            }
+                        }
+                        if (instFields.size() == 3
+                                && instFields.get(0).getType() == String.class
+                                && instFields.get(1).getType() == String.class
+                                && instFields.get(2).getType() == boolean.class) {
+                            f.setAccessible(true);
+                            instFields.get(0).setAccessible(true);
+                            instFields.get(2).setAccessible(true);
+                            holderField = f;
+                            holderId = instFields.get(0);
+                            holderConn = instFields.get(2);
+                        }
+                    }
+                }
+            }
+
+            Method bridgeGetMgr = null;
+            Class<?> mgrCls = null;
+            Method mgrFileShare = null;
+            Object smallCore = null;
+            Method mgrSendBle = null;
+
+            for (Method bm : bridgeCls.getDeclaredMethods()) {
+                if (Modifier.isStatic(bm.getModifiers()) || bm.getParameterTypes().length != 0) {
+                    continue;
+                }
+                Class<?> cand = bm.getReturnType();
+                if (cand.isPrimitive() || cand.isInterface() || cand.isArray() || cand.isEnum()) {
+                    continue;
+                }
+                String cn = cand.getName();
+                if (cn.startsWith("java.") || cn.startsWith("android.")) {
+                    continue;
+                }
+                Method foundFileShare = null;
+                Object foundSmallCore = null;
+                Method foundSendBle = null;
+                for (Method mm : cand.getDeclaredMethods()) {
+                    if (Modifier.isStatic(mm.getModifiers())) continue;
+                    Class<?>[] pt = mm.getParameterTypes();
+                    if (pt.length == 4
+                            && pt[0] == File.class
+                            && pt[1] == String.class
+                            && pt[2].isEnum()
+                            && pt[3] == String.class
+                            && mm.getReturnType() == String.class) {
+                        Object sc = findEnumConst(pt[2], "SmallCore");
+                        if (sc != null) {
+                            foundFileShare = mm;
+                            foundSmallCore = sc;
+                        }
+                    } else if (pt.length == 2
+                            && !pt[0].isPrimitive()
+                            && pt[1] == Function2.class
+                            && mm.getReturnType() == void.class) {
+                        foundSendBle = mm;
+                    }
+                }
+                if (foundFileShare != null && foundSendBle != null) {
+                    bm.setAccessible(true);
+                    foundFileShare.setAccessible(true);
+                    foundSendBle.setAccessible(true);
+                    bridgeGetMgr = bm;
+                    mgrCls = cand;
+                    mgrFileShare = foundFileShare;
+                    smallCore = foundSmallCore;
+                    mgrSendBle = foundSendBle;
+                    break;
+                }
+            }
+
+            if (mgrCls == null || mgrFileShare == null || mgrSendBle == null) {
+                safeLogW("CoreConnectHandles: failed to locate CoreConnect manager on " + bridgeCls.getName());
+                return null;
+            }
+
+            Field mgrSingleton = null;
+            Field mgrCompField = null;
+            Method mgrCompGetter = null;
+            for (Field mf : mgrCls.getDeclaredFields()) {
+                if (!Modifier.isStatic(mf.getModifiers())) continue;
+                if (mf.getType() == mgrCls && mgrSingleton == null) {
+                    mf.setAccessible(true);
+                    mgrSingleton = mf;
+                } else if (!mf.getType().isPrimitive() && mf.getType() != mgrCls && mgrCompGetter == null) {
+                    for (Method cm : mf.getType().getDeclaredMethods()) {
+                        if (!Modifier.isStatic(cm.getModifiers())
+                                && cm.getParameterTypes().length == 0
+                                && cm.getReturnType() == mgrCls) {
+                            mf.setAccessible(true);
+                            cm.setAccessible(true);
+                            mgrCompField = mf;
+                            mgrCompGetter = cm;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            Method mgrDevicesMap = null;
+            for (Method mm : mgrCls.getDeclaredMethods()) {
+                if (Modifier.isStatic(mm.getModifiers())
+                        && mm.getParameterTypes().length == 0
+                        && Map.class.isAssignableFrom(mm.getReturnType())) {
+                    mm.setAccessible(true);
+                    mgrDevicesMap = mm;
+                    break;
+                }
+            }
+
+            Class<?> msgCls = mgrSendBle.getParameterTypes()[0];
+            Constructor<?> msgCtor = null;
+            Object teleprompterBiz = null;
+            Object normalPrio = null;
+            for (Constructor<?> c : msgCls.getDeclaredConstructors()) {
+                if (c.isSynthetic()) continue;
+                Class<?>[] pt = c.getParameterTypes();
+                if (pt.length == 10
+                        && pt[0] == byte[].class
+                        && pt[1] == String.class
+                        && pt[2] == String.class
+                        && pt[3].isEnum()
+                        && pt[5].isEnum()
+                        && pt[6] == boolean.class
+                        && pt[7] == boolean.class
+                        && pt[9] == Function2.class) {
+                    Object biz = findEnumConst(pt[3], "TELEPROMPTER");
+                    Object prio = findEnumConst(pt[5], "NORMAL");
+                    if (biz != null && prio != null) {
+                        c.setAccessible(true);
+                        msgCtor = c;
+                        teleprompterBiz = biz;
+                        normalPrio = prio;
+                        break;
+                    }
+                }
+            }
+
+            if (msgCtor == null) {
+                safeLogW("CoreConnectHandles: failed to locate 10-arg BLE message ctor on " + msgCls.getName());
+                return null;
+            }
+
+            safeLogI("[BRIDGE-RESOLVED] bridge=" + bridgeCls.getName()
+                    + " mgr=" + mgrCls.getName()
+                    + " msg=" + msgCls.getName()
+                    + " biz=" + teleprompterBiz.getClass().getName()
+                    + " core=" + smallCore.getClass().getName());
+
+            return new CoreConnectHandles(
+                    bridgeCls,
+                    bridgeSingleton,
+                    holderField,
+                    holderId,
+                    holderConn,
+                    bridgeGetMgr,
+                    mgrCls,
+                    mgrSingleton,
+                    mgrCompField,
+                    mgrCompGetter,
+                    mgrDevicesMap,
+                    mgrFileShare,
+                    smallCore,
+                    mgrSendBle,
+                    msgCtor,
+                    teleprompterBiz,
+                    normalPrio);
+        } catch (Throwable t) {
+            safeLogW("resolveCoreConnectHandlesForClass error: " + t);
+            return null;
+        }
+    }
+
+    private static CoreConnectHandles resolveCoreConnectHandles() {
+        CoreConnectHandles h = cachedHandles;
+        if (h != null) return h;
+        synchronized (LyricsTeleprompterBridge.class) {
+            h = cachedHandles;
+            if (h != null) return h;
+            Class<?> bridgeCls = null;
+            Object seen = lastSeenBridge;
+            if (seen != null) {
+                bridgeCls = seen.getClass();
+            } else {
+                try {
+                    Application app = appContext;
+                    ClassLoader cl = app != null
+                            ? app.getClassLoader()
+                            : LyricsTeleprompterBridge.class.getClassLoader();
+                    bridgeCls = Class.forName(configuredBridgeClassName, false, cl);
+                } catch (Throwable ignored) {}
+            }
+            if (bridgeCls != null) {
+                h = resolveCoreConnectHandlesForClass(bridgeCls);
+                cachedHandles = h;
+            }
+            return h;
+        }
+    }
+
     private static String resolveConnectedGlassesDeviceId() {
+        CoreConnectHandles handles = resolveCoreConnectHandles();
         String zId = "";
         boolean zFlag = false;
-        try {
-            o4 b = lastSeenBridge != null ? lastSeenBridge : o4.Q;
-            if (b != null && b.z != null) {
-                h4 z = b.z;
-                zId = safe(z.a);
-                zFlag = z.c;
-            }
-        } catch (Throwable ignored) {}
+        if (handles != null) {
+            try {
+                Object b = handles.resolveBridgeInstance(lastSeenBridge);
+                if (b != null && handles.activeDeviceHolderField != null) {
+                    Object z = handles.activeDeviceHolderField.get(b);
+                    if (z != null) {
+                        Object rawZId = handles.holderIdField.get(z);
+                        Object rawZFlag = handles.holderConnectedField.get(z);
+                        zId = rawZId instanceof String ? safe((String) rawZId) : "";
+                        zFlag = Boolean.TRUE.equals(rawZFlag);
+                    }
+                }
+            } catch (Throwable ignored) {}
+        }
 
-        // Iterate CoreConnect w.j() device map: map key is canonical deviceId, dev.b() is live BLE/SPP auth state!
+        // Iterate CoreConnect device map: map key is canonical deviceId, dev.b() is live BLE/SPP auth state!
         String wConnectedId = "";
         boolean sawDeviceEntries = false;
         StringBuilder mapDiag = new StringBuilder();
-        try {
-            Map devices = w.j();
-            if (devices != null && !devices.isEmpty()) {
-                for (Object entryObj : devices.entrySet()) {
-                    if (entryObj instanceof Map.Entry) {
-                        Map.Entry en = (Map.Entry) entryObj;
+        if (handles != null) {
+            try {
+                Map<?, ?> devices = handles.getDevicesMap();
+                if (devices != null && !devices.isEmpty()) {
+                    String[] idHolder = new String[1];
+                    boolean[] connHolder = new boolean[1];
+                    for (Map.Entry<?, ?> en : devices.entrySet()) {
                         Object val = en.getValue();
-                        if (val instanceof g0) {
+                        if (handles.inspectDeviceEntry(val, idHolder, connHolder)) {
                             sawDeviceEntries = true;
-                            g0 dev = (g0) val;
                             String keyId = (en.getKey() instanceof String) ? safe((String) en.getKey()) : "";
-                            String fieldId = safe(dev.a);
+                            String fieldId = idHolder[0];
                             String devId = !fieldId.isEmpty() ? fieldId : keyId;
-                            boolean conn = dev.b();
+                            boolean conn = connHolder[0];
                             mapDiag.append(devId).append("(").append(conn).append(");");
                             if (conn && !devId.isEmpty() && wConnectedId.isEmpty()) {
                                 wConnectedId = devId;
@@ -1397,14 +2109,14 @@ public final class LyricsTeleprompterBridge {
                         }
                     }
                 }
-            }
-        } catch (Throwable ignored) {}
+            } catch (Throwable ignored) {}
+        }
 
         String chosen = "";
         if (!wConnectedId.isEmpty()) {
             chosen = wConnectedId;
         } else if (!sawDeviceEntries) {
-            // CoreConnect map not initialized yet -> fall back to activeDeviceId (o4.z.a) or lastSeenDeviceId
+            // CoreConnect map not initialized yet -> fall back to activeDeviceId (bridge.z.a) or lastSeenDeviceId
             chosen = !zId.isEmpty() ? zId : safe(lastSeenDeviceId);
         }
 
@@ -1419,27 +2131,16 @@ public final class LyricsTeleprompterBridge {
     private static boolean sendBleTeleprompter(final byte[] payload, final String deviceId, final boolean needAck) {
         if (payload == null || deviceId == null || deviceId.isEmpty()) return false;
         try {
-            w wInst = resolveCoreConnectW();
-            if (wInst == null) {
-                Log.w(TAG, "sendBleTeleprompter: wInst is NULL (lastSeenBridge=" + lastSeenBridge + ")");
+            CoreConnectHandles handles = resolveCoreConnectHandles();
+            Object mgrInst = handles != null ? handles.resolveMgrInstance(lastSeenBridge) : null;
+            if (handles == null || mgrInst == null) {
+                Log.w(TAG, "sendBleTeleprompter: mgrInst is NULL (handles=" + handles + ", lastSeenBridge=" + lastSeenBridge + ")");
                 return false;
             }
             final String msgId = "lyr_" + MSG_ID_GEN.incrementAndGet();
-            v0 msg = new v0(
-                    payload,
-                    msgId,
-                    deviceId,
-                    vb.h.TELEPROMPTER,
-                    null,
-                    b.NORMAL,
-                    needAck,
-                    false,
-                    null,
-                    null
-            );
-            wInst.u(msg, new Function2() {
+            handles.invokeSendBle(mgrInst, payload, msgId, deviceId, needAck, new Function2() {
                 @Override
-                public Object invoke(Object v0Obj, Object errObj) {
+                public Object invoke(Object msgObj, Object errObj) {
                     if (errObj != null) {
                         Log.w(TAG, "[BLE-CB-ERR] msgId=" + msgId + " dev=" + deviceId + " len=" + payload.length + " err=" + errObj);
                     } else if (needAck) {
@@ -1823,26 +2524,34 @@ public final class LyricsTeleprompterBridge {
     }
 
     private static LyricsManuscript getOrFetchManuscript(SystemMediaBridge.TrackInfo track) {
-        String key = normalizeTrackKey(track.title, track.artist);
+        String mode = appContext != null
+                ? CustomAiConfig.load(appContext).lyricsDisplayMode
+                : MODE_BILINGUAL;
+        return getOrFetchManuscript(track, mode);
+    }
+
+    private static LyricsManuscript getOrFetchManuscript(SystemMediaBridge.TrackInfo track, String rawMode) {
+        String mode = CustomAiConfig.normalizeLyricsMode(rawMode);
+        String cacheKey = normalizeTrackKey(track.title, track.artist) + "|mode=" + mode;
         synchronized (CACHE_LOCK) {
-            LyricsManuscript cached = MANUSCRIPT_CACHE.get(key);
+            LyricsManuscript cached = MANUSCRIPT_CACHE.get(cacheKey);
             if (cached != null) {
                 return cached;
             }
         }
 
         LyricsManuscript fetched = fetchLyricsManuscriptOnline(
-                track.title, track.artist, track.durationMs, track.packageName, null, null);
+                track.title, track.artist, track.durationMs, track.packageName, mode, null, null);
         if (fetched.hasSyncedLyrics) {
             synchronized (CACHE_LOCK) {
-                MANUSCRIPT_CACHE.put(key, fetched);
+                MANUSCRIPT_CACHE.put(cacheKey, fetched);
             }
         }
         return fetched;
     }
 
     /**
-     * 5-arg overload preserved for unit test compatibility (delegates with durationMs = 0L).
+     * 5-arg overload preserved for unit test compatibility (delegates with durationMs = 0L, MODE_ORIGINAL).
      */
     public static LyricsManuscript fetchLyricsManuscriptOnline(
             String rawTitle,
@@ -1852,12 +2561,11 @@ public final class LyricsTeleprompterBridge {
             String qqBaseOverride
     ) {
         return fetchLyricsManuscriptOnline(
-                rawTitle, rawArtist, 0L, playerPkg, netEaseBaseOverride, qqBaseOverride);
+                rawTitle, rawArtist, 0L, playerPkg, MODE_ORIGINAL, netEaseBaseOverride, qqBaseOverride);
     }
 
     /**
-     * Fetches LRC from NetEase Cloud Music and/or QQ Music, parses timestamps, pre-wraps lines,
-     * and returns a ready-to-stream LyricsManuscript (never null; falls back to static song card).
+     * 6-arg overload preserved for unit test compatibility (defaults to MODE_ORIGINAL when appContext == null).
      */
     public static LyricsManuscript fetchLyricsManuscriptOnline(
             String rawTitle,
@@ -1867,9 +2575,32 @@ public final class LyricsTeleprompterBridge {
             String netEaseBaseOverride,
             String qqBaseOverride
     ) {
+        String mode = appContext != null
+                ? CustomAiConfig.load(appContext).lyricsDisplayMode
+                : MODE_ORIGINAL;
+        return fetchLyricsManuscriptOnline(
+                rawTitle, rawArtist, durationMs, playerPkg, mode, netEaseBaseOverride, qqBaseOverride);
+    }
+
+    /**
+     * Fetches multi-track LRC (original + Chinese translation + Romaji) from NetEase Cloud Music
+     * and/or QQ Music, aligns timestamps, pre-wraps lines to 34 half-width units, and returns a
+     * ready-to-stream LyricsManuscript.
+     */
+    public static LyricsManuscript fetchLyricsManuscriptOnline(
+            String rawTitle,
+            String rawArtist,
+            long durationMs,
+            String playerPkg,
+            String displayMode,
+            String netEaseBaseOverride,
+            String qqBaseOverride
+    ) {
         String title = safe(rawTitle);
         String artist = safe(rawArtist);
+        String mode = CustomAiConfig.normalizeLyricsMode(displayMode);
         boolean preferQq = SystemMediaBridge.PKG_QQMUSIC.equals(playerPkg);
+        boolean wantsRomaji = MODE_ROMAJI.equals(mode) || MODE_TRILINGUAL.equals(mode);
 
         SystemMediaBridge.SongHint hint = SystemMediaBridge.getLastResolvedSongHint();
         String hintedNeId = "";
@@ -1884,21 +2615,31 @@ public final class LyricsTeleprompterBridge {
         }
 
         if (preferQq) {
-            String qqLrc = fetchQqLrc(title, artist, durationMs, hintedQqMid, qqBaseOverride);
-            LyricsManuscript qqMs = parseLrcAndBuildManuscript(title, artist, qqLrc, "QQ音乐");
+            LrcBundle qqBundle = fetchQqLrcBundle(title, artist, durationMs, hintedQqMid, qqBaseOverride);
+            if (qqBundle.hasMainLrc() && wantsRomaji && qqBundle.romalrc.isEmpty() && containsJapaneseKana(qqBundle.lrc)) {
+                // Enrich QQ Music Japanese track with NetEase Kanji-resolved romalrc when available!
+                LrcBundle neEnrich = fetchNetEaseLrcBundle(title, artist, durationMs, hintedNeId, netEaseBaseOverride);
+                if (!neEnrich.romalrc.isEmpty()) {
+                    qqBundle = new LrcBundle(
+                            qqBundle.lrc,
+                            !qqBundle.tlyric.isEmpty() ? qqBundle.tlyric : neEnrich.tlyric,
+                            neEnrich.romalrc);
+                }
+            }
+            LyricsManuscript qqMs = parseLrcBundleAndBuildManuscript(title, artist, qqBundle, mode, "QQ音乐");
             if (qqMs.hasSyncedLyrics) return qqMs;
 
-            String neLrc = fetchNetEaseLrc(title, artist, durationMs, hintedNeId, netEaseBaseOverride);
-            LyricsManuscript neMs = parseLrcAndBuildManuscript(title, artist, neLrc, "网易云音乐");
+            LrcBundle neBundle = fetchNetEaseLrcBundle(title, artist, durationMs, hintedNeId, netEaseBaseOverride);
+            LyricsManuscript neMs = parseLrcBundleAndBuildManuscript(title, artist, neBundle, mode, "网易云音乐");
             if (neMs.hasSyncedLyrics) return neMs;
             return qqMs;
         } else {
-            String neLrc = fetchNetEaseLrc(title, artist, durationMs, hintedNeId, netEaseBaseOverride);
-            LyricsManuscript neMs = parseLrcAndBuildManuscript(title, artist, neLrc, "网易云音乐");
+            LrcBundle neBundle = fetchNetEaseLrcBundle(title, artist, durationMs, hintedNeId, netEaseBaseOverride);
+            LyricsManuscript neMs = parseLrcBundleAndBuildManuscript(title, artist, neBundle, mode, "网易云音乐");
             if (neMs.hasSyncedLyrics) return neMs;
 
-            String qqLrc = fetchQqLrc(title, artist, durationMs, hintedQqMid, qqBaseOverride);
-            LyricsManuscript qqMs = parseLrcAndBuildManuscript(title, artist, qqLrc, "QQ音乐");
+            LrcBundle qqBundle = fetchQqLrcBundle(title, artist, durationMs, hintedQqMid, qqBaseOverride);
+            LyricsManuscript qqMs = parseLrcBundleAndBuildManuscript(title, artist, qqBundle, mode, "QQ音乐");
             if (qqMs.hasSyncedLyrics) return qqMs;
             return neMs;
         }
@@ -1911,6 +2652,11 @@ public final class LyricsTeleprompterBridge {
 
     public static String fetchNetEaseLrc(
             String title, String artist, long durationMs, String knownSongId, String baseUrlOverride) {
+        return fetchNetEaseLrcBundle(title, artist, durationMs, knownSongId, baseUrlOverride).lrc;
+    }
+
+    public static LrcBundle fetchNetEaseLrcBundle(
+            String title, String artist, long durationMs, String knownSongId, String baseUrlOverride) {
         String base = (baseUrlOverride != null && !baseUrlOverride.isEmpty())
                 ? stripTrailingSlash(baseUrlOverride)
                 : "https://music.163.com";
@@ -1922,7 +2668,7 @@ public final class LyricsTeleprompterBridge {
             } else {
                 candidateIds.addAll(resolveNetEaseSongIdsForLyrics(title, artist, durationMs, baseUrlOverride));
             }
-            if (candidateIds.isEmpty()) return "";
+            if (candidateIds.isEmpty()) return new LrcBundle("", "", "");
 
             Map<String, String> headers = new HashMap<>();
             headers.put("Referer", "https://music.163.com/");
@@ -1931,7 +2677,8 @@ public final class LyricsTeleprompterBridge {
             for (int i = 0; i < tries; i++) {
                 String songId = candidateIds.get(i);
                 if (songId.isEmpty()) continue;
-                String url = base + "/api/song/lyric?id=" + urlEncode(songId) + "&lv=1&kv=1&tv=-1";
+                // tv=-1 requests translated Chinese lyrics (tlyric); rv=-1 requests Romaji lyrics (romalrc)
+                String url = base + "/api/song/lyric?id=" + urlEncode(songId) + "&lv=1&kv=1&tv=-1&rv=-1";
                 String body = httpGet(url, headers);
                 if (body.isEmpty()) continue;
 
@@ -1939,24 +2686,31 @@ public final class LyricsTeleprompterBridge {
                 if (Boolean.TRUE.equals(root.get("nolyric")) || Boolean.TRUE.equals(root.get("uncollected"))) {
                     continue;
                 }
+                Map<String, Object> tlyricObj = JsonMini.getMap(root, "tlyric");
+                String tlyric = safe(JsonMini.getString(tlyricObj, "lyric"));
+
+                Map<String, Object> romaObj = JsonMini.getMap(root, "romalrc");
+                String romalrc = safe(JsonMini.getString(romaObj, "lyric"));
+
                 Map<String, Object> lrcObj = JsonMini.getMap(root, "lrc");
                 String lyric = safe(JsonMini.getString(lrcObj, "lyric"));
                 if (!lyric.isEmpty() && lyric.contains("[")) {
-                    safeLogI("Resolved NetEase LRC songId=" + songId + " for " + title + " - " + artist);
-                    return lyric;
+                    safeLogI("Resolved NetEase LRC songId=" + songId + " for " + title + " - " + artist
+                            + " (hasTrans=" + !tlyric.isEmpty() + ", hasRoma=" + !romalrc.isEmpty() + ")");
+                    return new LrcBundle(lyric, tlyric, romalrc);
                 }
 
                 Map<String, Object> klyricObj = JsonMini.getMap(root, "klyric");
                 String klyric = safe(JsonMini.getString(klyricObj, "lyric"));
                 if (!klyric.isEmpty() && klyric.contains("[")) {
                     safeLogI("Resolved NetEase klyric songId=" + songId + " for " + title + " - " + artist);
-                    return klyric;
+                    return new LrcBundle(klyric, tlyric, romalrc);
                 }
             }
-            return "";
+            return new LrcBundle("", "", "");
         } catch (Throwable t) {
-            safeLogW("fetchNetEaseLrc error: " + t.getMessage());
-            return "";
+            safeLogW("fetchNetEaseLrcBundle error: " + t.getMessage());
+            return new LrcBundle("", "", "");
         }
     }
 
@@ -1966,6 +2720,11 @@ public final class LyricsTeleprompterBridge {
     }
 
     public static String fetchQqLrc(
+            String title, String artist, long durationMs, String knownSongMid, String baseUrlOverride) {
+        return fetchQqLrcBundle(title, artist, durationMs, knownSongMid, baseUrlOverride).lrc;
+    }
+
+    public static LrcBundle fetchQqLrcBundle(
             String title, String artist, long durationMs, String knownSongMid, String baseUrlOverride) {
         String base = (baseUrlOverride != null && !baseUrlOverride.isEmpty())
                 ? stripTrailingSlash(baseUrlOverride)
@@ -1978,7 +2737,7 @@ public final class LyricsTeleprompterBridge {
             } else {
                 candidateMids.addAll(resolveQqSongMidsForLyrics(title, artist, durationMs, baseUrlOverride));
             }
-            if (candidateMids.isEmpty()) return "";
+            if (candidateMids.isEmpty()) return new LrcBundle("", "", "");
 
             Map<String, String> headers = new HashMap<>();
             headers.put("Referer", "https://y.qq.com/");
@@ -1993,27 +2752,32 @@ public final class LyricsTeleprompterBridge {
                 if (body.isEmpty()) continue;
 
                 Map<String, Object> root = JsonMini.parseObject(body);
-                String lyric = safe(JsonMini.getString(root, "lyric"));
-                if (lyric.isEmpty()) continue;
-
-                // Handle Base64 payload if nobase64=1 was ignored by an upstream mirror
-                if (!lyric.contains("[") && !lyric.contains("&#")) {
-                    try {
-                        byte[] decoded = Base64.getDecoder().decode(lyric.replaceAll("\\s+", ""));
-                        lyric = new String(decoded, StandardCharsets.UTF_8);
-                    } catch (Throwable ignored) {}
+                String decodedLyric = decodeQqLyricField(safe(JsonMini.getString(root, "lyric")));
+                if (decodedLyric.isEmpty() || !decodedLyric.contains("[")) {
+                    continue;
                 }
-                String decodedLyric = decodeHtmlEntities(lyric);
-                if (decodedLyric.contains("[")) {
-                    safeLogI("Resolved QQ LRC mid=" + mid + " for " + title + " - " + artist);
-                    return decodedLyric;
-                }
+                String decodedTrans = decodeQqLyricField(safe(JsonMini.getString(root, "trans")));
+                safeLogI("Resolved QQ LRC mid=" + mid + " for " + title + " - " + artist
+                        + " (hasTrans=" + !decodedTrans.isEmpty() + ")");
+                return new LrcBundle(decodedLyric, decodedTrans, "");
             }
-            return "";
+            return new LrcBundle("", "", "");
         } catch (Throwable t) {
-            safeLogW("fetchQqLrc error: " + t.getMessage());
-            return "";
+            safeLogW("fetchQqLrcBundle error: " + t.getMessage());
+            return new LrcBundle("", "", "");
         }
+    }
+
+    private static String decodeQqLyricField(String rawField) {
+        if (rawField == null || rawField.isEmpty()) return "";
+        String val = rawField;
+        if (!val.contains("[") && !val.contains("&#")) {
+            try {
+                byte[] decoded = Base64.getDecoder().decode(val.replaceAll("\\s+", ""));
+                val = new String(decoded, StandardCharsets.UTF_8);
+            } catch (Throwable ignored) {}
+        }
+        return decodeHtmlEntities(val);
     }
 
     /**
@@ -2617,6 +3381,21 @@ public final class LyricsTeleprompterBridge {
 
     public static LyricsManuscript parseLrcAndBuildManuscript(
             String title, String artist, String rawLrc, String sourcePlatform) {
+        return parseLrcBundleAndBuildManuscript(
+                title, artist, new LrcBundle(rawLrc, "", ""), MODE_ORIGINAL, sourcePlatform);
+    }
+
+    public static LyricsManuscript parseLrcBundleAndBuildManuscript(
+            String title,
+            String artist,
+            LrcBundle bundle,
+            String displayMode,
+            String sourcePlatform
+    ) {
+        String mode = CustomAiConfig.normalizeLyricsMode(displayMode);
+        boolean wantsTrans = MODE_BILINGUAL.equals(mode) || MODE_TRILINGUAL.equals(mode);
+        boolean wantsRoma = MODE_ROMAJI.equals(mode) || MODE_TRILINGUAL.equals(mode);
+
         String rawCleanTitle = sanitizeBmpText(safe(title)).trim();
         String cleanTitle = rawCleanTitle.isEmpty() ? "未知歌曲" : rawCleanTitle;
         String cleanArtist = sanitizeBmpText(safe(artist)).trim();
@@ -2628,25 +3407,39 @@ public final class LyricsTeleprompterBridge {
                 : ("[歌词] " + cleanTitle + " - " + cleanArtist);
         List<String> headerLines = wrapLineToHudWidth(headerRaw, MAX_LINE_HALF_WIDTH);
 
-        List<TimedLine> parsed = parseRawLrcLines(rawLrc);
+        String mainLrc = bundle != null ? bundle.lrc : "";
+        List<TimedLine> parsed = parseRawLrcLines(mainLrc);
+        List<TimedLine> parsedTrans = (wantsTrans && bundle != null && !bundle.tlyric.isEmpty())
+                ? parseRawLrcLines(bundle.tlyric) : Collections.<TimedLine>emptyList();
+        List<TimedLine> parsedRoma = (wantsRoma && bundle != null && !bundle.romalrc.isEmpty())
+                ? parseRawLrcLines(bundle.romalrc) : Collections.<TimedLine>emptyList();
+
+        String[] alignedRoma = wantsRoma
+                ? alignCompanionLines(parsed, parsedRoma, true) : new String[parsed.size()];
+        String[] alignedTrans = wantsTrans
+                ? alignCompanionLines(parsed, parsedTrans, false) : new String[parsed.size()];
+
         List<String> finalLines = new ArrayList<>();
         List<Long> finalTimes = new ArrayList<>();
+        List<Boolean> finalCompanions = new ArrayList<>();
         boolean hasSynced = !parsed.isEmpty();
 
         if (!hasSynced) {
             for (String hl : headerLines) {
                 finalLines.add(hl);
                 finalTimes.add(0L);
+                finalCompanions.add(Boolean.FALSE);
             }
             finalLines.add("暂无滚动歌词");
             finalTimes.add(1000L);
+            finalCompanions.add(Boolean.FALSE);
         } else {
-            // Prepend song title header if first lyric starts >= 800ms (or at 0ms before lyrics)
             long firstTime = parsed.get(0).timeMs;
             if (firstTime >= 600L) {
                 for (int i = 0; i < headerLines.size(); i++) {
                     finalLines.add(headerLines.get(i));
                     finalTimes.add(Math.min(firstTime - 100L, i * 200L));
+                    finalCompanions.add(Boolean.FALSE);
                 }
             }
 
@@ -2654,28 +3447,124 @@ public final class LyricsTeleprompterBridge {
                 TimedLine cur = parsed.get(i);
                 long nextTime = (i + 1 < parsed.size()) ? parsed.get(i + 1).timeMs : (cur.timeMs + 4000L);
                 List<String> wrapped = wrapLineToHudWidth(cur.text, MAX_LINE_HALF_WIDTH);
+
+                long lastOrigTime = cur.timeMs;
                 if (wrapped.size() == 1) {
                     finalLines.add(wrapped.get(0));
                     finalTimes.add(cur.timeMs);
+                    finalCompanions.add(Boolean.FALSE);
                 } else {
                     long span = Math.max(600L, Math.min(6000L, nextTime - cur.timeMs));
                     int k = wrapped.size();
                     for (int j = 0; j < k; j++) {
+                        long subT = cur.timeMs + (span * j) / k;
                         finalLines.add(wrapped.get(j));
-                        finalTimes.add(cur.timeMs + (span * j) / k);
+                        finalTimes.add(subT);
+                        finalCompanions.add(Boolean.FALSE);
+                        lastOrigTime = subT;
+                    }
+                }
+
+                // 1) Append Romaji companion line(s) right below original line
+                if (wantsRoma) {
+                    String romaText = safe(alignedRoma[i]);
+                    if (romaText.isEmpty() && containsPureTransliterableKana(cur.text)) {
+                        romaText = transliterateJapaneseKanaToRomaji(cur.text);
+                    }
+                    if (!romaText.isEmpty() && !romaText.equalsIgnoreCase(cur.text)) {
+                        List<String> romaWrapped = wrapLineToHudWidth("~ " + romaText, MAX_LINE_HALF_WIDTH);
+                        for (String rl : romaWrapped) {
+                            finalLines.add(rl);
+                            finalTimes.add(lastOrigTime);
+                            finalCompanions.add(Boolean.TRUE);
+                        }
+                    }
+                }
+
+                // 2) Append Chinese translation companion line(s)
+                if (wantsTrans) {
+                    String transText = safe(alignedTrans[i]);
+                    if (!transText.isEmpty() && !transText.equalsIgnoreCase(cur.text)) {
+                        List<String> transWrapped = wrapLineToHudWidth("· " + transText, MAX_LINE_HALF_WIDTH);
+                        for (String tl : transWrapped) {
+                            finalLines.add(tl);
+                            finalTimes.add(lastOrigTime);
+                            finalCompanions.add(Boolean.TRUE);
+                        }
                     }
                 }
             }
         }
 
+        return packManuscript(
+                trackKey, did, cleanTitle, cleanArtist,
+                finalLines, finalTimes, finalCompanions,
+                hasSynced, sourcePlatform, mode, false);
+    }
+
+    /**
+     * Builds a static teleprompter manuscript from plain text (for Skill push_to_teleprompter or clipboard push).
+     */
+    public static LyricsManuscript buildCustomNoteManuscript(String rawTitle, String rawContent) {
+        String cleanTitle = sanitizeBmpText(safe(rawTitle)).trim();
+        if (cleanTitle.isEmpty()) cleanTitle = "AI 提词便签";
+        String body = sanitizeBmpText(rawContent == null ? "" : rawContent)
+                .replace("\r\n", "\n")
+                .replace('\r', '\n')
+                .trim();
+        if (body.isEmpty()) body = cleanTitle;
+
+        List<String> finalLines = new ArrayList<>();
+        List<Long> finalTimes = new ArrayList<>();
+        List<Boolean> finalCompanions = new ArrayList<>();
+
+        for (String hl : wrapLineToHudWidth("[提词] " + cleanTitle, MAX_LINE_HALF_WIDTH)) {
+            finalLines.add(hl);
+            finalTimes.add(0L);
+            finalCompanions.add(Boolean.FALSE);
+        }
+
+        String[] paragraphs = body.split("\n");
+        for (String para : paragraphs) {
+            String trimmed = para.trim();
+            if (trimmed.isEmpty()) continue;
+            for (String wl : wrapLineToHudWidth(trimmed, MAX_LINE_HALF_WIDTH)) {
+                finalLines.add(wl);
+                finalTimes.add(0L);
+                finalCompanions.add(Boolean.FALSE);
+            }
+        }
+
+        String noteKey = "custom_note|" + System.currentTimeMillis();
+        return packManuscript(
+                noteKey, LYRICS_SLOT_DID, cleanTitle, "",
+                finalLines, finalTimes, finalCompanions,
+                true, "CustomSkill", MODE_ORIGINAL, true);
+    }
+
+    private static LyricsManuscript packManuscript(
+            String trackKey,
+            String did,
+            String cleanTitle,
+            String cleanArtist,
+            List<String> finalLines,
+            List<Long> finalTimes,
+            List<Boolean> finalCompanions,
+            boolean hasSynced,
+            String sourcePlatform,
+            String mode,
+            boolean isCustomNote
+    ) {
         int n = finalLines.size();
         String[] linesArr = finalLines.toArray(new String[0]);
         long[] timesArr = new long[n];
         int[] offsetsArr = new int[n];
+        boolean[] compArr = new boolean[n];
 
         ByteArrayOutputStream bos = new ByteArrayOutputStream(n * 40);
         for (int i = 0; i < n; i++) {
             timesArr[i] = finalTimes.get(i);
+            compArr[i] = i < finalCompanions.size() && Boolean.TRUE.equals(finalCompanions.get(i));
             offsetsArr[i] = bos.size();
             byte[] lb = linesArr[i].getBytes(StandardCharsets.UTF_8);
             bos.write(lb, 0, lb.length);
@@ -2695,11 +3584,230 @@ public final class LyricsTeleprompterBridge {
                 linesArr,
                 timesArr,
                 offsetsArr,
+                compArr,
                 utf8,
                 checksum,
                 hasSynced,
-                sourcePlatform
+                sourcePlatform,
+                mode,
+                isCustomNote
         );
+    }
+
+    private static String[] alignCompanionLines(
+            List<TimedLine> origLines, List<TimedLine> compLines, boolean isRomaji) {
+        String[] out = new String[origLines.size()];
+        if (origLines.isEmpty() || compLines == null || compLines.isEmpty()) {
+            return out;
+        }
+        boolean[] used = new boolean[compLines.size()];
+        // Pass 1: exact timestamp match (within 20ms)
+        for (int i = 0; i < origLines.size(); i++) {
+            long ot = origLines.get(i).timeMs;
+            for (int j = 0; j < compLines.size(); j++) {
+                if (used[j]) continue;
+                TimedLine cl = compLines.get(j);
+                if (Math.abs(cl.timeMs - ot) <= 20L) {
+                    if (!isBoilerplateCompanionLine(cl.text, isRomaji)) {
+                        out[i] = cl.text;
+                    }
+                    used[j] = true;
+                    break;
+                }
+            }
+        }
+        // Pass 2: tolerant match (<= 450ms) when orig[i] is mutually closest to comp[j]
+        for (int i = 0; i < origLines.size(); i++) {
+            if (out[i] != null) continue;
+            long ot = origLines.get(i).timeMs;
+            int bestJ = -1;
+            long bestDiff = 451L;
+            for (int j = 0; j < compLines.size(); j++) {
+                if (used[j]) continue;
+                long d = Math.abs(compLines.get(j).timeMs - ot);
+                if (d < bestDiff) {
+                    bestDiff = d;
+                    bestJ = j;
+                }
+            }
+            if (bestJ >= 0) {
+                long ct = compLines.get(bestJ).timeMs;
+                boolean closerOtherOrig = false;
+                for (int k = 0; k < origLines.size(); k++) {
+                    if (k != i && out[k] == null && Math.abs(origLines.get(k).timeMs - ct) < bestDiff) {
+                        closerOtherOrig = true;
+                        break;
+                    }
+                }
+                if (!closerOtherOrig) {
+                    String txt = compLines.get(bestJ).text;
+                    if (!isBoilerplateCompanionLine(txt, isRomaji)) {
+                        out[i] = txt;
+                    }
+                    used[bestJ] = true;
+                }
+            }
+        }
+        return out;
+    }
+
+    private static boolean isBoilerplateCompanionLine(String text, boolean isRomaji) {
+        String s = safe(text);
+        if (s.isEmpty() || "//".equals(s) || "/".equals(s)) return true;
+        String low = s.toLowerCase(Locale.ROOT);
+        if (low.startsWith("by:") || low.startsWith("by：")
+                || low.contains("翻译贡献") || low.contains("罗马音贡献")
+                || low.contains("歌词翻译：") || low.contains("校对：")) {
+            return true;
+        }
+        return false;
+    }
+
+    public static boolean containsJapaneseKana(String s) {
+        if (s == null || s.isEmpty()) return false;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if ((c >= '\u3040' && c <= '\u309F') || (c >= '\u30A0' && c <= '\u30FF')) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean containsPureTransliterableKana(String s) {
+        if (!containsJapaneseKana(s)) return false;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c >= '\u4E00' && c <= '\u9FFF') {
+                // Contains CJK Kanji -> avoid partial half-Kanji romaji when online romalrc wasn't available
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static final Map<String, String> KANA_DIGRAPHS = new HashMap<>();
+    private static final Map<Character, String> KANA_MONOGRAPHS = new HashMap<>();
+
+    static {
+        String[][] di = new String[][]{
+                {"きゃ", "kya"}, {"きゅ", "kyu"}, {"きょ", "kyo"},
+                {"しゃ", "sha"}, {"しゅ", "shu"}, {"しょ", "sho"},
+                {"ちゃ", "cha"}, {"ちゅ", "chu"}, {"ちょ", "cho"},
+                {"にゃ", "nya"}, {"にゅ", "nyu"}, {"にょ", "nyo"},
+                {"ひゃ", "hya"}, {"ひゅ", "hyu"}, {"ひょ", "hyo"},
+                {"みゃ", "mya"}, {"みゅ", "myu"}, {"みょ", "myo"},
+                {"りゃ", "rya"}, {"りゅ", "ryu"}, {"りょ", "ryo"},
+                {"ぎゃ", "gya"}, {"ぎゅ", "gyu"}, {"ぎょ", "gyo"},
+                {"じゃ", "ja"},  {"じゅ", "ju"},  {"じょ", "jo"},
+                {"ぢゃ", "ja"},  {"ぢゅ", "ju"},  {"ぢょ", "jo"},
+                {"びゃ", "bya"}, {"びゅ", "byu"}, {"びょ", "byo"},
+                {"ぴゃ", "pya"}, {"ぴゅ", "pyu"}, {"ぴょ", "pyo"},
+                {"ふぁ", "fa"},  {"ふぃ", "fi"},  {"ふぇ", "fe"},  {"ふぉ", "fo"},
+                {"てぃ", "ti"},  {"でぃ", "di"},  {"とぅ", "tu"},  {"どぅ", "du"},
+                {"うぃ", "wi"},  {"うぇ", "we"},  {"うぉ", "wo"},
+                {"しぇ", "she"}, {"ちぇ", "che"}, {"じぇ", "je"},
+                {"ヴぁ", "va"},  {"ヴぃ", "vi"},  {"ヴぇ", "ve"},  {"ヴぉ", "vo"}
+        };
+        for (String[] p : di) {
+            KANA_DIGRAPHS.put(p[0], p[1]);
+        }
+        String[][] mono = new String[][]{
+                {"あ", "a"},  {"い", "i"},   {"う", "u"},  {"え", "e"},  {"お", "o"},
+                {"か", "ka"}, {"き", "ki"},  {"く", "ku"}, {"け", "ke"}, {"こ", "ko"},
+                {"さ", "sa"}, {"し", "shi"}, {"す", "su"}, {"せ", "se"}, {"そ", "so"},
+                {"た", "ta"}, {"ち", "chi"}, {"つ", "tsu"},{"て", "te"}, {"と", "to"},
+                {"な", "na"}, {"に", "ni"},  {"ぬ", "nu"}, {"ね", "ne"}, {"の", "no"},
+                {"は", "ha"}, {"ひ", "hi"},  {"ふ", "fu"}, {"へ", "he"}, {"ほ", "ho"},
+                {"ま", "ma"}, {"み", "mi"},  {"む", "mu"}, {"め", "me"}, {"も", "mo"},
+                {"や", "ya"}, {"ゆ", "yu"},  {"よ", "yo"},
+                {"ら", "ra"}, {"り", "ri"},  {"る", "ru"}, {"れ", "re"}, {"ろ", "ro"},
+                {"わ", "wa"}, {"ゐ", "wi"},  {"ゑ", "we"}, {"を", "wo"}, {"ん", "n"},
+                {"が", "ga"}, {"ぎ", "gi"},  {"ぐ", "gu"}, {"げ", "ge"}, {"ご", "go"},
+                {"ざ", "za"}, {"じ", "ji"},  {"ず", "zu"}, {"ぜ", "ze"}, {"ぞ", "zo"},
+                {"だ", "da"}, {"ぢ", "ji"},  {"づ", "zu"}, {"で", "de"}, {"ど", "do"},
+                {"ば", "ba"}, {"び", "bi"},  {"ぶ", "bu"}, {"べ", "be"}, {"ぼ", "bo"},
+                {"ぱ", "pa"}, {"ぴ", "pi"},  {"ぷ", "pu"}, {"ぺ", "pe"}, {"ぽ", "po"},
+                {"ぁ", "a"},  {"ぃ", "i"},   {"ぅ", "u"},  {"ぇ", "e"},  {"ぉ", "o"},
+                {"ゃ", "ya"}, {"ゅ", "yu"},  {"ょ", "yo"}, {"ゎ", "wa"}, {"ヴ", "vu"}
+        };
+        for (String[] p : mono) {
+            KANA_MONOGRAPHS.put(p[0].charAt(0), p[1]);
+        }
+    }
+
+    /**
+     * Converts Japanese Hiragana/Katakana phrases into clean Hepburn Romaji (handling digraphs,
+     * sokuon っ/ッ gemination, and chōonpu ー long vowels).
+     */
+    public static String transliterateJapaneseKanaToRomaji(String input) {
+        if (input == null || input.isEmpty()) return "";
+        // Normalize Katakana (\u30A1..\u30F6) -> Hiragana (\u3041..\u3096), keeping ヴ (\u30F4) and ー (\u30FC)
+        StringBuilder norm = new StringBuilder(input.length());
+        for (int i = 0; i < input.length(); i++) {
+            char c = input.charAt(i);
+            if (c >= '\u30A1' && c <= '\u30F3') {
+                norm.append((char) (c - 0x60));
+            } else {
+                norm.append(c);
+            }
+        }
+        String s = norm.toString();
+        StringBuilder out = new StringBuilder(s.length() * 2);
+        boolean doubleNextConsonant = false;
+        int i = 0;
+        int len = s.length();
+        while (i < len) {
+            char c = s.charAt(i);
+            if (c == 'っ') {
+                doubleNextConsonant = true;
+                i++;
+                continue;
+            }
+            if (c == 'ー') {
+                if (out.length() > 0) {
+                    char prev = out.charAt(out.length() - 1);
+                    if ("aeiou".indexOf(prev) >= 0) {
+                        out.append(prev);
+                    }
+                }
+                i++;
+                continue;
+            }
+            String syl = null;
+            int step = 1;
+            if (i + 1 < len) {
+                String pair = s.substring(i, i + 2);
+                syl = KANA_DIGRAPHS.get(pair);
+                if (syl != null) step = 2;
+            }
+            if (syl == null) {
+                syl = KANA_MONOGRAPHS.get(c);
+            }
+            if (syl != null) {
+                if (doubleNextConsonant && !syl.isEmpty()) {
+                    char fc = syl.charAt(0);
+                    if ("aeiou".indexOf(fc) < 0) {
+                        out.append(fc == 'c' ? 't' : fc);
+                    }
+                    doubleNextConsonant = false;
+                }
+                out.append(syl);
+                if (c == 'ん' && i + 1 < len) {
+                    char nx = s.charAt(i + 1);
+                    String nxSyl = KANA_MONOGRAPHS.get(nx);
+                    if (nxSyl != null && !nxSyl.isEmpty() && "aeiouy".indexOf(nxSyl.charAt(0)) >= 0) {
+                        out.append('\'');
+                    }
+                }
+                i += step;
+            } else {
+                doubleNextConsonant = false;
+                out.append(c);
+                i++;
+            }
+        }
+        return out.toString().replaceAll("\\s+", " ").trim();
     }
 
     private static List<TimedLine> parseRawLrcLines(String rawLrc) {

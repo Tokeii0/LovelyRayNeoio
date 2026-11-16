@@ -15,16 +15,27 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.CancellationException;
 
 /**
  * Pure JDK client supporting OpenAI /v1/chat/completions AND /v1/responses
- * (both SSE streaming and non-streaming JSON responses).
+ * (SSE streaming + non-streaming JSON + multi-turn MCP / Skill Function Calling).
  */
 public final class OpenAiApiClient {
 
     public static final String PROTO_CHAT_COMPLETIONS = "chat_completions";
     public static final String PROTO_RESPONSES = "responses";
+
+    /**
+     * Pluggable provider for Skills & MCP tools so OpenAiApiClient stays pure JDK.
+     */
+    public interface ToolExecutor {
+        List<Map<String, Object>> getChatCompletionsTools();
+        List<Map<String, Object>> getResponsesTools();
+        String getActiveSkillInstructions();
+        String executeTool(String toolName, String argumentsJson) throws Exception;
+    }
 
     public static final class EndpointConfig {
         public String protocol = PROTO_CHAT_COMPLETIONS;
@@ -40,6 +51,8 @@ public final class OpenAiApiClient {
         public String reasoningEffort = "";
         public int timeoutSeconds = 45;
         public String customHeadersJson = "{}";
+        public ToolExecutor toolExecutor = null;
+        public int maxToolRounds = 3;
     }
 
     public interface StreamCallback {
@@ -81,6 +94,40 @@ public final class OpenAiApiClient {
             }, "CustomAiCancel");
             t.setDaemon(true);
             t.start();
+        }
+    }
+
+    static final class ToolCallItem {
+        final String id;
+        final String name;
+        final String arguments;
+
+        ToolCallItem(String id, String name, String arguments) {
+            this.id = (id == null || id.trim().isEmpty()) ? ("call_" + System.nanoTime()) : id.trim();
+            this.name = name == null ? "" : name.trim();
+            this.arguments = (arguments == null || arguments.trim().isEmpty()) ? "{}" : arguments.trim();
+        }
+    }
+
+    private static final class ToolCallAcc {
+        String id = "";
+        String name = "";
+        final StringBuilder args = new StringBuilder();
+    }
+
+    private static final class TurnResult {
+        final String text;
+        final List<ToolCallItem> toolCalls;
+
+        TurnResult(String text, List<ToolCallItem> toolCalls) {
+            this.text = text == null ? "" : text;
+            this.toolCalls = toolCalls != null ? toolCalls : new ArrayList<ToolCallItem>();
+        }
+    }
+
+    private static final class HttpToolUnsupportedException extends IOException {
+        HttpToolUnsupportedException(String msg) {
+            super(msg);
         }
     }
 
@@ -127,11 +174,139 @@ public final class OpenAiApiClient {
         String urlStr = resolveEndpointUrl(cfg.baseUrl, cfg.protocol);
         boolean useResponses = isResponsesProtocol(cfg.protocol);
 
-        Map<String, Object> bodyMap = useResponses
-                ? buildResponsesRequest(cfg, history, userText)
-                : buildChatCompletionsRequest(cfg, history, userText);
-        String jsonBody = JsonMini.stringify(bodyMap);
+        ToolExecutor executor = cfg.toolExecutor;
+        List<Map<String, Object>> tools = null;
+        if (executor != null) {
+            try {
+                tools = useResponses ? executor.getResponsesTools() : executor.getChatCompletionsTools();
+            } catch (Throwable ignored) {}
+        }
+        boolean hasTools = tools != null && !tools.isEmpty();
+        int maxRounds = hasTools ? Math.max(1, Math.min(6, cfg.maxToolRounds)) : 0;
 
+        List<Map<String, Object>> chatMessages = null;
+        List<Map<String, Object>> responsesItems = null;
+        if (useResponses) {
+            responsesItems = buildInitialResponsesInput(history, userText);
+        } else {
+            chatMessages = buildInitialChatMessages(cfg, history, userText);
+        }
+
+        StringBuilder aggregatedText = new StringBuilder();
+        boolean disableToolsFallback = false;
+
+        for (int round = 0; round <= maxRounds; round++) {
+            if (cancelToken != null && cancelToken.isCancelled()) {
+                throw new CancellationException("Cancelled");
+            }
+            boolean sendToolsThisRound = hasTools && !disableToolsFallback && (round < maxRounds);
+            List<Map<String, Object>> activeTools = sendToolsThisRound ? tools : null;
+
+            Map<String, Object> bodyMap = useResponses
+                    ? buildResponsesRequestWithItems(cfg, responsesItems, activeTools)
+                    : buildChatCompletionsRequestWithMessages(cfg, chatMessages, activeTools);
+
+            TurnResult turn;
+            try {
+                turn = executeSingleHttpRound(
+                        urlStr, cfg, useResponses, bodyMap, sendToolsThisRound && round == 0, callback, cancelToken);
+            } catch (HttpToolUnsupportedException unsupported) {
+                // Upstream model/proxy rejected "tools" schema -> retry cleanly without tools!
+                disableToolsFallback = true;
+                if (callback != null) {
+                    callback.onReasoningDelta("\n[当前模型不支持 tools 参数，已自动降级为纯文本对话]\n");
+                }
+                Map<String, Object> retryBody = useResponses
+                        ? buildResponsesRequestWithItems(cfg, responsesItems, null)
+                        : buildChatCompletionsRequestWithMessages(cfg, chatMessages, null);
+                turn = executeSingleHttpRound(urlStr, cfg, useResponses, retryBody, false, callback, cancelToken);
+            }
+
+            if (!turn.text.isEmpty()) {
+                if (aggregatedText.length() > 0 && !aggregatedText.toString().endsWith("\n")) {
+                    aggregatedText.append('\n');
+                }
+                aggregatedText.append(turn.text);
+            }
+
+            if (turn.toolCalls.isEmpty() || executor == null || round >= maxRounds) {
+                break;
+            }
+
+            // Execute requested MCP / Skill tools and feed results back for next round
+            if (useResponses) {
+                for (ToolCallItem tc : turn.toolCalls) {
+                    Map<String, Object> fcItem = new LinkedHashMap<>();
+                    fcItem.put("type", "function_call");
+                    fcItem.put("call_id", tc.id);
+                    fcItem.put("name", tc.name);
+                    fcItem.put("arguments", tc.arguments);
+                    responsesItems.add(fcItem);
+
+                    if (callback != null) {
+                        callback.onReasoningDelta("\n[🔧 调用工具: " + tc.name + "]\n");
+                    }
+                    String toolOut = invokeToolSafely(executor, tc);
+
+                    Map<String, Object> outItem = new LinkedHashMap<>();
+                    outItem.put("type", "function_call_output");
+                    outItem.put("call_id", tc.id);
+                    outItem.put("output", toolOut);
+                    responsesItems.add(outItem);
+                }
+            } else {
+                Map<String, Object> assistantMsg = new LinkedHashMap<>();
+                assistantMsg.put("role", "assistant");
+                assistantMsg.put("content", turn.text.isEmpty() ? null : turn.text);
+                List<Map<String, Object>> rawCalls = new ArrayList<>();
+                for (ToolCallItem tc : turn.toolCalls) {
+                    Map<String, Object> fn = new LinkedHashMap<>();
+                    fn.put("name", tc.name);
+                    fn.put("arguments", tc.arguments);
+                    Map<String, Object> callMap = new LinkedHashMap<>();
+                    callMap.put("id", tc.id);
+                    callMap.put("type", "function");
+                    callMap.put("function", fn);
+                    rawCalls.add(callMap);
+                }
+                assistantMsg.put("tool_calls", rawCalls);
+                chatMessages.add(assistantMsg);
+
+                for (ToolCallItem tc : turn.toolCalls) {
+                    if (callback != null) {
+                        callback.onReasoningDelta("\n[🔧 调用工具: " + tc.name + "]\n");
+                    }
+                    String toolOut = invokeToolSafely(executor, tc);
+                    Map<String, Object> toolMsg = new LinkedHashMap<>();
+                    toolMsg.put("role", "tool");
+                    toolMsg.put("tool_call_id", tc.id);
+                    toolMsg.put("content", toolOut);
+                    chatMessages.add(toolMsg);
+                }
+            }
+        }
+        return aggregatedText.toString();
+    }
+
+    private static String invokeToolSafely(ToolExecutor executor, ToolCallItem tc) {
+        try {
+            String res = executor.executeTool(tc.name, tc.arguments);
+            return res == null ? "" : res;
+        } catch (Throwable t) {
+            return "{\"error\":\"" + escapeJsonText(t.getMessage() != null ? t.getMessage() : t.toString()) + "\"}";
+        }
+    }
+
+    private static TurnResult executeSingleHttpRound(
+            String urlStr,
+            EndpointConfig cfg,
+            boolean useResponses,
+            Map<String, Object> bodyMap,
+            boolean allowToolFallbackOn400,
+            StreamCallback callback,
+            CancelToken cancelToken
+    ) throws IOException {
+        String jsonBody = JsonMini.stringify(bodyMap);
         HttpURLConnection conn = null;
         try {
             URL url = new URL(urlStr);
@@ -164,6 +339,12 @@ public final class OpenAiApiClient {
             int status = conn.getResponseCode();
             if (status < 200 || status >= 300) {
                 String errBody = readAll(conn.getErrorStream() != null ? conn.getErrorStream() : conn.getInputStream());
+                if (allowToolFallbackOn400 && (status == 400 || status == 422 || status == 501)) {
+                    String low = errBody.toLowerCase(Locale.ROOT);
+                    if (low.contains("tool") || low.contains("function")) {
+                        throw new HttpToolUnsupportedException(errBody);
+                    }
+                }
                 String hint = "HTTP " + status + " (" + urlStr + ")";
                 String extracted = extractErrorMessage(errBody);
                 if (extracted != null && !extracted.isEmpty()) {
@@ -181,23 +362,25 @@ public final class OpenAiApiClient {
             try (InputStream is = conn.getInputStream()) {
                 if (isSse) {
                     return useResponses
-                            ? parseResponsesSse(is, callback, cancelToken)
-                            : parseChatCompletionsSse(is, callback, cancelToken);
+                            ? parseResponsesSseTurn(is, callback, cancelToken)
+                            : parseChatCompletionsSseTurn(is, callback, cancelToken);
                 } else {
                     String respText = readAll(is);
-                    // Fallback: some proxies stream SSE even with text/plain or omitted Content-Type
                     String trimmed = respText.trim();
                     if (trimmed.startsWith("data:") || trimmed.startsWith("event:")) {
                         return useResponses
-                                ? parseResponsesSseText(respText, callback, cancelToken)
-                                : parseChatCompletionsSseText(respText, callback, cancelToken);
+                                ? parseResponsesSseTextTurn(respText, callback, cancelToken)
+                                : parseChatCompletionsSseTextTurn(respText, callback, cancelToken);
                     }
                     return useResponses
-                            ? parseResponsesJson(respText, callback)
-                            : parseChatCompletionsJson(respText, callback);
+                            ? parseResponsesJsonTurn(respText, callback)
+                            : parseChatCompletionsJsonTurn(respText, callback);
                 }
             }
         } catch (IOException e) {
+            if (e instanceof HttpToolUnsupportedException) {
+                throw e;
+            }
             String msg = e.getMessage();
             if (msg != null && msg.contains("Cleartext HTTP traffic")) {
                 throw new IOException("Android 禁止明文 HTTP 请求，请改用 HTTPS 地址或反代域名 (" + msg + ")", e);
@@ -251,6 +434,34 @@ public final class OpenAiApiClient {
 
     static Map<String, Object> buildChatCompletionsRequest(
             EndpointConfig cfg, List<ConversationMemory.Message> history, String userText) {
+        List<Map<String, Object>> tools = cfg.toolExecutor != null
+                ? cfg.toolExecutor.getChatCompletionsTools() : null;
+        return buildChatCompletionsRequestWithMessages(
+                cfg, buildInitialChatMessages(cfg, history, userText), tools);
+    }
+
+    private static List<Map<String, Object>> buildInitialChatMessages(
+            EndpointConfig cfg, List<ConversationMemory.Message> history, String userText) {
+        List<Map<String, Object>> messages = new ArrayList<>();
+        String effectiveSys = buildEffectiveSystemPrompt(cfg);
+        if (!effectiveSys.isEmpty()) {
+            messages.add(msgObj("system", effectiveSys));
+        }
+        if (history != null) {
+            for (ConversationMemory.Message m : history) {
+                if (m != null && m.content != null && !m.content.isEmpty()) {
+                    messages.add(msgObj(nonEmpty(m.role, "user"), m.content));
+                }
+            }
+        }
+        messages.add(msgObj("user", userText == null ? "" : userText));
+        return messages;
+    }
+
+    private static Map<String, Object> buildChatCompletionsRequestWithMessages(
+            EndpointConfig cfg,
+            List<Map<String, Object>> messages,
+            List<Map<String, Object>> tools) {
         Map<String, Object> root = new LinkedHashMap<>();
         String modelName = nonEmpty(cfg.model, "gpt-6-luna");
         root.put("model", modelName);
@@ -271,25 +482,39 @@ public final class OpenAiApiClient {
             }
         }
 
-        List<Map<String, Object>> messages = new ArrayList<>();
-        String effectiveSys = buildEffectiveSystemPrompt(cfg);
-        if (!effectiveSys.isEmpty()) {
-            messages.add(msgObj("system", effectiveSys));
-        }
-        if (history != null) {
-            for (ConversationMemory.Message m : history) {
-                if (m != null && m.content != null && !m.content.isEmpty()) {
-                    messages.add(msgObj(nonEmpty(m.role, "user"), m.content));
-                }
-            }
-        }
-        messages.add(msgObj("user", userText == null ? "" : userText));
         root.put("messages", messages);
+        if (tools != null && !tools.isEmpty()) {
+            root.put("tools", tools);
+        }
         return root;
     }
 
     static Map<String, Object> buildResponsesRequest(
             EndpointConfig cfg, List<ConversationMemory.Message> history, String userText) {
+        List<Map<String, Object>> tools = cfg.toolExecutor != null
+                ? cfg.toolExecutor.getResponsesTools() : null;
+        return buildResponsesRequestWithItems(
+                cfg, buildInitialResponsesInput(history, userText), tools);
+    }
+
+    private static List<Map<String, Object>> buildInitialResponsesInput(
+            List<ConversationMemory.Message> history, String userText) {
+        List<Map<String, Object>> input = new ArrayList<>();
+        if (history != null) {
+            for (ConversationMemory.Message m : history) {
+                if (m != null && m.content != null && !m.content.isEmpty()) {
+                    input.add(msgObj(nonEmpty(m.role, "user"), m.content));
+                }
+            }
+        }
+        input.add(msgObj("user", userText == null ? "" : userText));
+        return input;
+    }
+
+    private static Map<String, Object> buildResponsesRequestWithItems(
+            EndpointConfig cfg,
+            List<Map<String, Object>> inputItems,
+            List<Map<String, Object>> tools) {
         Map<String, Object> root = new LinkedHashMap<>();
         String modelName = nonEmpty(cfg.model, "gpt-6-luna");
         root.put("model", modelName);
@@ -309,21 +534,14 @@ public final class OpenAiApiClient {
             reasoning.put("effort", effort);
             reasoning.put("summary", "auto");
             root.put("reasoning", reasoning);
-            // OpenAI /v1/responses rejects temperature when reasoning is configured
         } else if (!shouldOmitTemperature(modelName, cfg.temperature)) {
             root.put("temperature", cfg.temperature);
         }
 
-        List<Map<String, Object>> input = new ArrayList<>();
-        if (history != null) {
-            for (ConversationMemory.Message m : history) {
-                if (m != null && m.content != null && !m.content.isEmpty()) {
-                    input.add(msgObj(nonEmpty(m.role, "user"), m.content));
-                }
-            }
+        root.put("input", inputItems);
+        if (tools != null && !tools.isEmpty()) {
+            root.put("tools", tools);
         }
-        input.add(msgObj("user", userText == null ? "" : userText));
-        root.put("input", input);
         return root;
     }
 
@@ -343,6 +561,15 @@ public final class OpenAiApiClient {
             if (sb.length() > 0) sb.append('\n');
             sb.append(cfg.extraContextHint.trim());
         }
+        if (cfg.toolExecutor != null) {
+            try {
+                String skillPrompt = cfg.toolExecutor.getActiveSkillInstructions();
+                if (skillPrompt != null && !skillPrompt.trim().isEmpty()) {
+                    if (sb.length() > 0) sb.append('\n');
+                    sb.append(skillPrompt.trim());
+                }
+            } catch (Throwable ignored) {}
+        }
         return sb.toString();
     }
 
@@ -353,11 +580,12 @@ public final class OpenAiApiClient {
         return m;
     }
 
-    private static String parseChatCompletionsSse(
+    private static TurnResult parseChatCompletionsSseTurn(
             InputStream is, StreamCallback cb, CancelToken cancel) throws IOException {
         BufferedReader br = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
         StringBuilder full = new StringBuilder();
         StringBuilder dataBuf = new StringBuilder();
+        Map<Integer, ToolCallAcc> toolAccMap = new TreeMap<>();
         String line;
         while ((line = br.readLine()) != null) {
             if (cancel != null && cancel.isCancelled()) {
@@ -365,7 +593,7 @@ public final class OpenAiApiClient {
             }
             if (line.isEmpty()) {
                 if (dataBuf.length() > 0) {
-                    boolean done = handleChatSseData(dataBuf.toString().trim(), full, cb);
+                    boolean done = handleChatSseData(dataBuf.toString().trim(), full, toolAccMap, cb);
                     dataBuf.setLength(0);
                     if (done) break;
                 }
@@ -380,20 +608,30 @@ public final class OpenAiApiClient {
             }
         }
         if (dataBuf.length() > 0) {
-            handleChatSseData(dataBuf.toString().trim(), full, cb);
+            handleChatSseData(dataBuf.toString().trim(), full, toolAccMap, cb);
         }
-        return full.toString();
+        List<ToolCallItem> calls = new ArrayList<>();
+        for (ToolCallAcc acc : toolAccMap.values()) {
+            if (!acc.name.isEmpty()) {
+                calls.add(new ToolCallItem(acc.id, acc.name, acc.args.toString()));
+            }
+        }
+        return new TurnResult(full.toString(), calls);
     }
 
-    private static String parseChatCompletionsSseText(
+    private static TurnResult parseChatCompletionsSseTextTurn(
             String text, StreamCallback cb, CancelToken cancel) throws IOException {
         byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
         try (InputStream bais = new java.io.ByteArrayInputStream(bytes)) {
-            return parseChatCompletionsSse(bais, cb, cancel);
+            return parseChatCompletionsSseTurn(bais, cb, cancel);
         }
     }
 
-    private static boolean handleChatSseData(String data, StringBuilder full, StreamCallback cb) throws IOException {
+    private static boolean handleChatSseData(
+            String data,
+            StringBuilder full,
+            Map<Integer, ToolCallAcc> toolAccMap,
+            StreamCallback cb) throws IOException {
         if (data.isEmpty() || "[DONE]".equals(data)) return true;
         Map<String, Object> root;
         try {
@@ -427,11 +665,39 @@ public final class OpenAiApiClient {
                     cb.onTextDelta(content);
                 }
             }
+            List<Object> tcs = JsonMini.getList(delta, "tool_calls");
+            if (tcs != null) {
+                for (int i = 0; i < tcs.size(); i++) {
+                    Map<String, Object> tcMap = JsonMini.asMap(tcs.get(i));
+                    if (tcMap == null) continue;
+                    int idx = JsonMini.getInt(tcMap, "index", i);
+                    ToolCallAcc acc = toolAccMap.get(idx);
+                    if (acc == null) {
+                        acc = new ToolCallAcc();
+                        toolAccMap.put(idx, acc);
+                    }
+                    String cid = JsonMini.getString(tcMap, "id");
+                    if (cid != null && !cid.isEmpty()) {
+                        acc.id = cid;
+                    }
+                    Map<String, Object> fnMap = JsonMini.getMap(tcMap, "function");
+                    if (fnMap != null) {
+                        String fnName = JsonMini.getString(fnMap, "name");
+                        if (fnName != null && !fnName.isEmpty()) {
+                            acc.name += fnName;
+                        }
+                        String fnArgs = JsonMini.getString(fnMap, "arguments");
+                        if (fnArgs != null && !fnArgs.isEmpty()) {
+                            acc.args.append(fnArgs);
+                        }
+                    }
+                }
+            }
         }
         return false;
     }
 
-    private static String parseChatCompletionsJson(String json, StreamCallback cb) throws IOException {
+    private static TurnResult parseChatCompletionsJsonTurn(String json, StreamCallback cb) throws IOException {
         Map<String, Object> root;
         try {
             root = JsonMini.parseObject(json);
@@ -449,7 +715,7 @@ public final class OpenAiApiClient {
         Map<String, Object> c0 = JsonMini.asMap(choices.get(0));
         Map<String, Object> msg = JsonMini.getMap(c0, "message");
         if (msg == null) msg = JsonMini.getMap(c0, "delta");
-        if (msg == null) return "";
+        if (msg == null) return new TurnResult("", null);
 
         String reasoning = JsonMini.getString(msg, "reasoning_content");
         if (reasoning == null) reasoning = JsonMini.getString(msg, "reasoning");
@@ -460,15 +726,34 @@ public final class OpenAiApiClient {
         if (content != null && !content.isEmpty() && cb != null) {
             cb.onTextDelta(content);
         }
-        return content == null ? "" : content;
+
+        List<ToolCallItem> calls = new ArrayList<>();
+        List<Object> tcs = JsonMini.getList(msg, "tool_calls");
+        if (tcs != null) {
+            for (Object o : tcs) {
+                Map<String, Object> tcMap = JsonMini.asMap(o);
+                if (tcMap == null) continue;
+                String id = JsonMini.getString(tcMap, "id");
+                Map<String, Object> fn = JsonMini.getMap(tcMap, "function");
+                if (fn != null) {
+                    String fnName = JsonMini.getString(fn, "name");
+                    String fnArgs = JsonMini.getString(fn, "arguments");
+                    if (fnName != null && !fnName.trim().isEmpty()) {
+                        calls.add(new ToolCallItem(id, fnName, fnArgs));
+                    }
+                }
+            }
+        }
+        return new TurnResult(content == null ? "" : content, calls);
     }
 
-    private static String parseResponsesSse(
+    private static TurnResult parseResponsesSseTurn(
             InputStream is, StreamCallback cb, CancelToken cancel) throws IOException {
         BufferedReader br = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
         StringBuilder full = new StringBuilder();
         String currentEvent = "";
         StringBuilder dataBuf = new StringBuilder();
+        LinkedHashMap<String, ToolCallItem> callMap = new LinkedHashMap<>();
         String line;
         while ((line = br.readLine()) != null) {
             if (cancel != null && cancel.isCancelled()) {
@@ -476,7 +761,7 @@ public final class OpenAiApiClient {
             }
             if (line.isEmpty()) {
                 if (dataBuf.length() > 0) {
-                    handleResponsesSseEvent(currentEvent, dataBuf.toString().trim(), full, cb);
+                    handleResponsesSseEvent(currentEvent, dataBuf.toString().trim(), full, callMap, cb);
                     dataBuf.setLength(0);
                     currentEvent = "";
                 }
@@ -493,21 +778,25 @@ public final class OpenAiApiClient {
             }
         }
         if (dataBuf.length() > 0) {
-            handleResponsesSseEvent(currentEvent, dataBuf.toString().trim(), full, cb);
+            handleResponsesSseEvent(currentEvent, dataBuf.toString().trim(), full, callMap, cb);
         }
-        return full.toString();
+        return new TurnResult(full.toString(), new ArrayList<>(callMap.values()));
     }
 
-    private static String parseResponsesSseText(
+    private static TurnResult parseResponsesSseTextTurn(
             String text, StreamCallback cb, CancelToken cancel) throws IOException {
         byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
         try (InputStream bais = new java.io.ByteArrayInputStream(bytes)) {
-            return parseResponsesSse(bais, cb, cancel);
+            return parseResponsesSseTurn(bais, cb, cancel);
         }
     }
 
     private static void handleResponsesSseEvent(
-            String eventName, String data, StringBuilder full, StreamCallback cb) throws IOException {
+            String eventName,
+            String data,
+            StringBuilder full,
+            LinkedHashMap<String, ToolCallItem> callMap,
+            StreamCallback cb) throws IOException {
         if (data.isEmpty() || "[DONE]".equals(data)) return;
         Map<String, Object> root;
         try {
@@ -529,14 +818,23 @@ public final class OpenAiApiClient {
             if (delta != null && !delta.isEmpty() && cb != null) {
                 cb.onReasoningDelta(delta);
             }
+        } else if ("response.output_item.done".equals(type)) {
+            Map<String, Object> item = JsonMini.getMap(root, "item");
+            collectResponsesFunctionCallItem(item, callMap);
         } else if ("response.completed".equals(type)) {
-            if (full.length() == 0) {
-                Map<String, Object> resp = JsonMini.getMap(root, "response");
-                if (resp != null) {
+            Map<String, Object> resp = JsonMini.getMap(root, "response");
+            if (resp != null) {
+                if (full.length() == 0) {
                     String fallback = extractResponsesOutputText(resp);
                     if (!fallback.isEmpty()) {
                         full.append(fallback);
                         if (cb != null) cb.onTextDelta(fallback);
+                    }
+                }
+                List<Object> output = JsonMini.getList(resp, "output");
+                if (output != null) {
+                    for (Object o : output) {
+                        collectResponsesFunctionCallItem(JsonMini.asMap(o), callMap);
                     }
                 }
             }
@@ -548,7 +846,20 @@ public final class OpenAiApiClient {
         }
     }
 
-    private static String parseResponsesJson(String json, StreamCallback cb) throws IOException {
+    private static void collectResponsesFunctionCallItem(
+            Map<String, Object> item, LinkedHashMap<String, ToolCallItem> callMap) {
+        if (item == null) return;
+        if (!"function_call".equals(JsonMini.getString(item, "type"))) return;
+        String callId = nonEmpty(JsonMini.getString(item, "call_id"), JsonMini.getString(item, "id"));
+        String name = JsonMini.getString(item, "name");
+        String args = JsonMini.getString(item, "arguments");
+        if (name != null && !name.trim().isEmpty()) {
+            ToolCallItem tci = new ToolCallItem(callId, name, args);
+            callMap.put(tci.id, tci);
+        }
+    }
+
+    private static TurnResult parseResponsesJsonTurn(String json, StreamCallback cb) throws IOException {
         Map<String, Object> root;
         try {
             root = JsonMini.parseObject(json);
@@ -567,7 +878,14 @@ public final class OpenAiApiClient {
         if (!text.isEmpty() && cb != null) {
             cb.onTextDelta(text);
         }
-        return text;
+        LinkedHashMap<String, ToolCallItem> callMap = new LinkedHashMap<>();
+        List<Object> output = JsonMini.getList(root, "output");
+        if (output != null) {
+            for (Object o : output) {
+                collectResponsesFunctionCallItem(JsonMini.asMap(o), callMap);
+            }
+        }
+        return new TurnResult(text, new ArrayList<>(callMap.values()));
     }
 
     private static String extractResponsesOutputText(Map<String, Object> root) {
@@ -678,5 +996,10 @@ public final class OpenAiApiClient {
     private static String truncate(String s, int max) {
         if (s == null) return "";
         return s.length() <= max ? s : s.substring(0, max) + "...";
+    }
+
+    private static String escapeJsonText(String s) {
+        if (s == null) return "";
+        return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "");
     }
 }

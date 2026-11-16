@@ -1,17 +1,19 @@
 ### MOD-01: com/rayneo/venus/VenusApplication.smali
 --- orig/VenusApplication.smali
 +++ patched/VenusApplication.smali
-@@ -75,8 +75,13 @@
+@@ -75,8 +75,15 @@
      invoke-static {p0}, Lcom/alibabacloud/rum/android/sdk/track/TrackInstrument;->startApp(Landroid/app/Application;)V
  
      invoke-super {p0}, Landroid/app/Application;->onCreate()V
  
 +    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-01 | Init CustomAI on App Start] ====================
++    const-string v0, "com.rayneo.rayneo_venus_sdk_plugin.o4"
++    invoke-static {v0}, Lcom/rayneo/customai/LyricsTeleprompterBridge;->registerBridgeClassName(Ljava/lang/String;)V
 +    invoke-static/range {p0 .. p0}, Lcom/rayneo/customai/CustomAiHooks;->onAppCreate(Landroid/app/Application;)V
 +    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-01] ====================
 +
 +
-     sget-object v0, Lfm0/g;->a:Lfm0/g;
+     sget-object v0, Lvm0/h;->a:Lvm0/h;
  
      invoke-virtual {v0}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
  
@@ -38,21 +40,21 @@
 +    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-02A] ====================
 +
 +
-     sget-object v0, Lhm0/d;->a:Lhm0/d;
+     sget-object v0, Lxm0/d;->a:Lxm0/d;
  
      invoke-virtual {v0}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
  
 @@ -671,8 +684,13 @@
      .registers 4
  
-     invoke-super {p0}, Ljp0/d;->onResume()V
+     invoke-super {p0}, Laq0/d;->onResume()V
  
 +    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-02B | Attach Draggable CustomAI Floating Badge] ====================
 +    invoke-static/range {p0 .. p0}, Lcom/rayneo/customai/CustomAiHooks;->onMainActivityResume(Landroid/app/Activity;)V
 +    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-02B] ====================
 +
 +
-     sget-object v0, Lfm0/d;->a:Lfm0/d;
+     sget-object v0, Lvm0/d;->a:Lvm0/d;
  
      const-string v1, "ui.attached"
  

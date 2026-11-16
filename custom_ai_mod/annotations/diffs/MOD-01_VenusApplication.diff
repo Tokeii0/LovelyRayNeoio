@@ -1,16 +1,18 @@
 --- orig/VenusApplication.smali
 +++ patched/VenusApplication.smali
-@@ -75,8 +75,13 @@
+@@ -75,8 +75,15 @@
      invoke-static {p0}, Lcom/alibabacloud/rum/android/sdk/track/TrackInstrument;->startApp(Landroid/app/Application;)V
  
      invoke-super {p0}, Landroid/app/Application;->onCreate()V
  
 +    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-01 | Init CustomAI on App Start] ====================
++    const-string v0, "com.rayneo.rayneo_venus_sdk_plugin.o4"
++    invoke-static {v0}, Lcom/rayneo/customai/LyricsTeleprompterBridge;->registerBridgeClassName(Ljava/lang/String;)V
 +    invoke-static/range {p0 .. p0}, Lcom/rayneo/customai/CustomAiHooks;->onAppCreate(Landroid/app/Application;)V
 +    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-01] ====================
 +
 +
-     sget-object v0, Lfm0/g;->a:Lfm0/g;
+     sget-object v0, Lvm0/h;->a:Lvm0/h;
  
      invoke-virtual {v0}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
  

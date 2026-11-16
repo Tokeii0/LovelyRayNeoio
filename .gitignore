@@ -19,6 +19,12 @@ custom_ai_mod/annotations/patched/
 # Temporary build & test outputs
 custom_ai_mod/_work_tmp_build/
 custom_ai_mod/test_out/
+promo_video/node_modules/
+promo_video/package-lock.json
+promo_video/_build_audio/
+*.mp4
+*.mov
+*.webm
 __pycache__/
 *.py[cod]
 *.class
