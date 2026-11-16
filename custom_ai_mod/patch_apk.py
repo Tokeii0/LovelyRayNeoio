@@ -107,6 +107,7 @@ STATIC_TARGET_CLASSES = {
     "MOD-02": ("com/rayneo/venus/MainActivity.smali", "MainActivity"),
     "MOD-03": ("com/rayneo/airuntime/controller/AssistantController.smali", "AssistantController"),
     "MOD-04": ("com/rayneo/airuntime/controller/AskAITask.smali", "AskAITask"),
+    "MOD-06": ("com/rayneo/airuntime/controller/ASRTask.smali", "ASRTask"),
 }
 
 
@@ -673,19 +674,135 @@ def patch_rayneo_net_bridge(src: str, bridge_desc: str = "Lcom/rayneo/rayneo_ven
     )
 
 
+def patch_asr_task(src: str) -> str:
+    # MOD-06A: initTask - register Proactive AI ("venus_proactive_ai_asr") listener & config
+    block_6a = wrap_block(
+        "MOD-06A",
+        "Register ASRTask for Disco Elysium Subtext & GALGAME Options when Proactive AI starts",
+        "\n".join(
+            [
+                "    iget-object v0, p0, Lcom/rayneo/airuntime/controller/ASRTask;->name:Ljava/lang/String;",
+                "    invoke-static {p0, v0, p1, p3}, Lcom/rayneo/customai/CustomAiHooks;->onAsrTaskInit(Lcom/rayneo/airuntime/controller/ASRTask;Ljava/lang/String;Lcom/rayneo/airuntime/controller/RayNeoASRConfig;Lcom/rayneo/airuntime/controller/ASRResultListener;)V",
+            ]
+        ),
+    )
+    out = replace_in_method(
+        src,
+        r"public final initTask\(Lcom/rayneo/airuntime/controller/RayNeoASRConfig;Lcom/rayneo/airuntime/bridge/AudioRecorderBridge\$AudioRecorderAdapter;Lcom/rayneo/airuntime/controller/ASRResultListener;\)Z",
+        r"^\s*\.(?:registers|locals)\s+\d+",
+        block_6a,
+        "MOD-06A ASRTask.initTask",
+    )
+
+    # MOD-06B & MOD-06C: stopTask & releaseTask
+    for mod_id, sig in [("MOD-06B", r"public final stopTask\(\)Z"), ("MOD-06C", r"public final releaseTask\(\)Z")]:
+        blk = wrap_block(
+            mod_id,
+            "Clean up Proactive AI Subtext session state on stop/release",
+            "\n".join(
+                [
+                    "    iget-object v0, p0, Lcom/rayneo/airuntime/controller/ASRTask;->name:Ljava/lang/String;",
+                    "    invoke-static {p0, v0}, Lcom/rayneo/customai/CustomAiHooks;->onAsrTaskStop(Lcom/rayneo/airuntime/controller/ASRTask;Ljava/lang/String;)V",
+                ]
+            ),
+        )
+        out = replace_in_method(out, sig, r"^\s*\.(?:registers|locals)\s+\d+", blk, f"{mod_id} ASRTask")
+
+    # MOD-06D: nativeOnAsrResult(String, Z)V
+    block_6d = wrap_block(
+        "MOD-06D",
+        "Feed Proactive AI ambient ASR clauses into SubtextGalgameEngine",
+        "\n".join(
+            [
+                "    iget-object v0, p0, Lcom/rayneo/airuntime/controller/ASRTask;->name:Ljava/lang/String;",
+                "    invoke-static {p0, v0, p1, p2}, Lcom/rayneo/customai/CustomAiHooks;->onAsrTaskResult(Lcom/rayneo/airuntime/controller/ASRTask;Ljava/lang/String;Ljava/lang/String;Z)V",
+            ]
+        ),
+    )
+    out = replace_in_method(
+        out,
+        r"private final nativeOnAsrResult\(Ljava/lang/String;Z\)V",
+        r"^\s*\.(?:registers|locals)\s+\d+",
+        block_6d,
+        "MOD-06D ASRTask.nativeOnAsrResult",
+    )
+
+    # MOD-06E: nativeOnProactiveHint(String, Z, String, String, String)V (note: p3 >= v16 -> move-object/from16 v1, p3)
+    block_6e = wrap_block(
+        "MOD-06E",
+        "Suppress stock encyclopedic C++ hints when SubtextGalgameEngine owns Proactive AI",
+        "\n".join(
+            [
+                "    iget-object v0, p0, Lcom/rayneo/airuntime/controller/ASRTask;->name:Ljava/lang/String;",
+                "    move-object/from16 v1, p3",
+                "    invoke-static {p0, v0, p1, p2, v1}, Lcom/rayneo/customai/CustomAiHooks;->onAsrTaskProactiveHint(Lcom/rayneo/airuntime/controller/ASRTask;Ljava/lang/String;Ljava/lang/String;ZLjava/lang/String;)Z",
+                "    move-result v0",
+                "    if-eqz v0, :cond_custom_ai_proactive_pass",
+                "    return-void",
+                "    :cond_custom_ai_proactive_pass",
+            ]
+        ),
+    )
+    out = replace_in_method(
+        out,
+        r"private final nativeOnProactiveHint\(Ljava/lang/String;ZLjava/lang/String;Ljava/lang/String;Ljava/lang/String;\)V",
+        r"^\s*\.(?:registers|locals)\s+\d+",
+        block_6e,
+        "MOD-06E ASRTask.nativeOnProactiveHint",
+    )
+    return out
+
+
+def patch_caption_hub(src: str, hub_desc: str) -> str:
+    esc_desc = re.escape(hub_desc)
+    forward_name = None
+    for m in re.finditer(
+        rf"(\.method public static final ([a-zA-Z0-9_]+)\({esc_desc}Ljava/lang/String;\)V[\s\S]*?\.end method)",
+        src,
+    ):
+        if '"translateResult forward to glass skipped/failed, payload="' in m.group(1):
+            forward_name = m.group(2)
+            break
+    if not forward_name:
+        raise RuntimeError(f"Could not locate caption forwarder ({hub_desc}, String)V on {hub_desc}")
+
+    block_7 = wrap_block(
+        "MOD-07",
+        "Intercept Live Captions / Translate payload for Disco Elysium Subtext & GALGAME Options",
+        "\n".join(
+            [
+                "    invoke-static {p0, p1}, Lcom/rayneo/customai/CustomAiHooks;->onCaptionForwardPayload(Ljava/lang/Object;Ljava/lang/String;)Ljava/lang/String;",
+                "    move-result-object p1",
+                "    if-nez p1, :cond_custom_ai_cap_pass",
+                "    return-void",
+                "    :cond_custom_ai_cap_pass",
+            ]
+        ),
+    )
+    return replace_in_method(
+        src,
+        rf"public static final {re.escape(forward_name)}\({esc_desc}Ljava/lang/String;\)V",
+        r"^\s*\.(?:registers|locals)\s+\d+",
+        block_7,
+        f"MOD-07 {hub_desc}->{forward_name}(hub, jsonString)",
+    )
+
+
 def locate_target_dex(apk_path: Path) -> tuple[list[str], str]:
     with zipfile.ZipFile(apk_path, "r") as zf:
         dex_names = sorted(
             [n for n in zf.namelist() if re.fullmatch(r"classes\d*\.dex", n)],
             key=lambda s: 1 if s == "classes.dex" else int(s[7:-4]),
         )
-        # Heuristic: look for descriptor string or RayneoNetBridge anchor string inside raw DEX bytes
+        # Heuristic: look for descriptor string or RayneoNetBridge/CaptionHub anchor string inside raw DEX bytes
         markers = [
             b"Lcom/rayneo/venus/VenusApplication;",
             b"Lcom/rayneo/venus/MainActivity;",
             b"Lcom/rayneo/airuntime/controller/AssistantController;",
             b"Lcom/rayneo/airuntime/controller/AskAITask;",
+            b"Lcom/rayneo/airuntime/controller/ASRTask;",
             b"netproxy_http_request_finished",
+            b"translateResult forward to glass skipped",
         ]
         found = []
         for dn in dex_names:
@@ -724,6 +841,28 @@ def discover_rayneo_net_bridge_smali(smali_dirs: dict[str, Path]) -> tuple[str, 
     short_name = f"RayneoNetBridge_{cand.stem}"
     print(f"[OK] Dynamically discovered RayneoNetBridge: {dn}:{rel_path} ({dot_name})")
     return rel_path, short_name, dot_name, desc
+
+
+def discover_caption_hub_smali(smali_dirs: dict[str, Path]) -> tuple[str, str, str]:
+    """Scans baksmali directories to dynamically locate CaptionHub (im0/c0) regardless of R8 renaming."""
+    hits: list[tuple[str, Path]] = []
+    anchor = '"translateResult forward to glass skipped/failed, payload="'
+    for dn, sdir in smali_dirs.items():
+        for cand in sorted(sdir.rglob("*.smali")):
+            if "$" in cand.name:
+                continue
+            txt = cand.read_text(encoding="utf-8", errors="ignore")
+            if anchor in txt and '"source_transcript"' in txt:
+                hits.append((dn, cand))
+    if len(hits) != 1:
+        raise RuntimeError(f"Expected exactly 1 CaptionHub class matching {anchor}, found {len(hits)}: {hits}")
+    dn, cand = hits[0]
+    rel_path = cand.relative_to(smali_dirs[dn]).as_posix()
+    no_ext = rel_path[:-6]
+    desc = f"L{no_ext};"
+    short_name = f"CaptionHub_{cand.stem}"
+    print(f"[OK] Dynamically discovered CaptionHub: {dn}:{rel_path} ({desc})")
+    return rel_path, short_name, desc
 
 
 _OBJECT_METHODS = {
@@ -967,9 +1106,11 @@ def patch_apk(input_apk: Path, output_apk: Path) -> None:
                 smali_dirs[dn] = smali_dir
 
         bridge_rel_path, bridge_short_name, bridge_dot_name, bridge_desc = discover_rayneo_net_bridge_smali(smali_dirs)
+        cap_rel_path, cap_short_name, cap_desc = discover_caption_hub_smali(smali_dirs)
 
         target_classes = dict(STATIC_TARGET_CLASSES)
         target_classes["MOD-05"] = (bridge_rel_path, bridge_short_name)
+        target_classes["MOD-07"] = (cap_rel_path, cap_short_name)
 
         patchers = {
             "MOD-01": lambda s: patch_venus_application(s, bridge_dot_name),
@@ -977,6 +1118,8 @@ def patch_apk(input_apk: Path, output_apk: Path) -> None:
             "MOD-03": patch_assistant_controller,
             "MOD-04": patch_ask_ai_task,
             "MOD-05": lambda s: patch_rayneo_net_bridge(s, bridge_desc),
+            "MOD-06": patch_asr_task,
+            "MOD-07": lambda s: patch_caption_hub(s, cap_desc),
         }
 
         for dn, smali_dir in smali_dirs.items():

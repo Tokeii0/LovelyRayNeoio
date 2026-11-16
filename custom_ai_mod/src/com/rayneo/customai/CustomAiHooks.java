@@ -11,6 +11,8 @@ import android.util.Log;
 import android.view.KeyEvent;
 import android.widget.Toast;
 
+import com.rayneo.airuntime.controller.ASRResultListener;
+import com.rayneo.airuntime.controller.ASRTask;
 import com.rayneo.airuntime.controller.AiAgentConfig;
 import com.rayneo.airuntime.controller.AiResultListener;
 import com.rayneo.airuntime.controller.AskAIResultListener;
@@ -19,6 +21,7 @@ import com.rayneo.airuntime.controller.AssistantController;
 import com.rayneo.airuntime.controller.NlpCommand;
 import com.rayneo.airuntime.controller.NlpResult;
 import com.rayneo.airuntime.controller.RayClawToolCallInfo;
+import com.rayneo.airuntime.controller.RayNeoASRConfig;
 import com.rayneo.airuntime.controller.RayNeoAiConfig;
 import com.rayneo.airuntime.controller.RayNeoAskAIGenerationOptions;
 import com.rayneo.airuntime.controller.RayNeoAskAIParams;
@@ -216,6 +219,9 @@ public final class CustomAiHooks {
         // Local Android MediaSession commands ("切歌/下一首/上一首/暂停/继续播放/什么歌"),
         // Lyrics Teleprompter commands ("打开歌词/双语歌词/打开罗马音/关闭歌词"), and Custom Skill
         // fast-lane intents ("投到眼镜提词器/剪贴板/MCP") are handled locally, NOT passed to RayClaw!
+        if (SubtextGalgameEngine.matchVoiceCommand(rawQuery) != 0) {
+            return null;
+        }
         if (LyricsTeleprompterBridge.matchVoiceCommand(rawQuery) != 0) {
             return null;
         }
@@ -258,6 +264,7 @@ public final class CustomAiHooks {
             CustomAiConfig cfg = CustomAiConfig.load(app);
             cfg.syncFlutterAskAiOverride(app);
             LyricsTeleprompterBridge.init(app);
+            SubtextGalgameEngine.init(app);
 
             app.registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
                 @Override
@@ -496,6 +503,25 @@ public final class CustomAiHooks {
             String devModel = st.aiConfig != null ? safeStr(st.aiConfig.getDeviceModel()) : "";
             boolean enableTts = agent != null && agent.getEnableTTS();
             boolean autoNext = agent != null && agent.getAutoNextRound();
+
+            // ===== Disco Elysium Subtext / GALGAME Voice Commands =====
+            final int subtextCmd = SubtextGalgameEngine.matchVoiceCommand(cleanQuery);
+            if (subtextCmd != 0) {
+                st.customTurnActive = true;
+                final long subLogId = CustomAiCallLog.startSystemMediaCall(
+                        app, "🎭 潜台词外挂设置", cleanQuery, devModel, enableTts, autoNext);
+                st.activeLogId = subLogId;
+                maybeShowCallToast(app, cfg, "🎭 潜台词设置", "DiscoElysium");
+                stopNativeWorkflowCleanly(ctrl, st, subLogId);
+
+                EXECUTOR.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        executeSubtextVoiceTurn(ctrl, st, seq, cleanQuery, safeSid, subtextCmd, subLogId);
+                    }
+                });
+                return;
+            }
 
             // ===== Lyrics <-> Teleprompter Voice Commands ("打开歌词/双语歌词/打开罗马音/关闭歌词") =====
             final int lyricsCmd = LyricsTeleprompterBridge.matchVoiceCommand(cleanQuery);
@@ -2082,6 +2108,76 @@ public final class CustomAiHooks {
         });
     }
 
+    private static void executeSubtextVoiceTurn(
+            final AssistantController ctrl,
+            final SessionState st,
+            final int seq,
+            final String query,
+            final String sessionId,
+            final int subtextCmd,
+            final long logId
+    ) {
+        final AiResultListener listener = st.listener;
+        final RayNeoAiConfig aiConfig = st.aiConfig;
+        final Application app = appContext;
+        if (listener == null || app == null) {
+            LyricsTeleprompterBridge.onVoiceSessionActive(false);
+            CustomAiCallLog.finishError(app, logId, "监听器或上下文为空");
+            return;
+        }
+        final CustomAiConfig cfg = CustomAiConfig.load(app);
+        AiAgentConfig agent = aiConfig != null ? aiConfig.getAiAgentConfig() : null;
+        final String dialogId = safeStr(agent != null ? agent.getDialogId() : null);
+        final boolean enableTts = agent != null && agent.getEnableTTS();
+        final boolean autoNextRound = agent != null && agent.getAutoNextRound();
+        final boolean allowAutoNext = autoNextRound && cfg.autoContinueAfterTts;
+
+        final String reply = SubtextGalgameEngine.executeVoiceCommand(app, subtextCmd);
+        CustomAiCallLog.onTextDelta(logId, reply);
+        ConversationMemory.appendTurn(dialogId, query, reply, cfg.maxHistoryTurns);
+
+        postToNativeCb(new Runnable() {
+            @Override
+            public void run() {
+                if (st.turnSeq.get() != seq) return;
+                listener.onSpeechStatus(SpeechStatus.RESPONDING);
+                listener.onNlpResult(buildNlpResult(dialogId, sessionId, query, reply, true, allowAutoNext, seq));
+                listener.onResponseComplete();
+
+                final RayNeoOriginalTtsBridge.CompletionCallback onTtsDone =
+                        new RayNeoOriginalTtsBridge.CompletionCallback() {
+                            @Override
+                            public void onComplete(boolean playedNormally) {
+                                if (st.activeLogId == logId) {
+                                    st.activeLogId = 0L;
+                                }
+                                LyricsTeleprompterBridge.onVoiceSessionActive(false);
+                                CustomAiCallLog.finishSuccess(app, logId, reply);
+                                if (playedNormally && allowAutoNext && ctrl != null && MAIN_HANDLER != null) {
+                                    Runnable nextTask = new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            if (st.turnSeq.get() != seq) return;
+                                            try {
+                                                ctrl.startNextRound();
+                                            } catch (Throwable ignored) {}
+                                        }
+                                    };
+                                    st.pendingNextRoundTask = nextTask;
+                                    MAIN_HANDLER.postDelayed(nextTask, AUTO_NEXT_ROUND_DELAY_MS);
+                                }
+                            }
+                        };
+
+                if (enableTts && !reply.isEmpty()) {
+                    RayNeoOriginalTtsBridge.speak(aiConfig, reply, sessionId, logId, listener, onTtsDone);
+                } else {
+                    onTtsDone.onComplete(false);
+                }
+            }
+        });
+    }
+
     // ==================== MOD-05: RayneoNet BLE Event Tap ====================
 
     public static boolean onRayneoNetEvent(Object bridge, String eventName, Map data) {
@@ -2097,6 +2193,46 @@ public final class CustomAiHooks {
         try {
             LyricsTeleprompterBridge.onRayneoNetTrace(bridge, direction, eventName, summary, meta, rawPayload);
         } catch (Throwable ignored) {}
+    }
+
+    // ==================== MOD-06: Proactive AI ("有问必答" / ASRTask) Subtext Hook ====================
+
+    public static void onAsrTaskInit(
+            ASRTask task, String taskName, RayNeoASRConfig config, ASRResultListener listener) {
+        try {
+            SubtextGalgameEngine.onAsrTaskInit(task, taskName, config, listener);
+        } catch (Throwable ignored) {}
+    }
+
+    public static void onAsrTaskStop(ASRTask task, String taskName) {
+        try {
+            SubtextGalgameEngine.onAsrTaskStop(task, taskName);
+        } catch (Throwable ignored) {}
+    }
+
+    public static void onAsrTaskResult(ASRTask task, String taskName, String asr, boolean finished) {
+        try {
+            SubtextGalgameEngine.onProactiveAsrResult(task, taskName, asr, finished);
+        } catch (Throwable ignored) {}
+    }
+
+    public static boolean onAsrTaskProactiveHint(
+            ASRTask task, String taskName, String text, boolean isFinish, String asrTextId) {
+        try {
+            return SubtextGalgameEngine.shouldSuppressStockProactiveHint(task, taskName, text, isFinish, asrTextId);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    // ==================== MOD-07: Live Captions / Translate Hub Subtext Hook ====================
+
+    public static String onCaptionForwardPayload(Object c0Instance, String jsonString) {
+        try {
+            return SubtextGalgameEngine.onCaptionForwardPayload(c0Instance, jsonString);
+        } catch (Throwable ignored) {
+            return jsonString;
+        }
     }
 
     private static String safeStr(String s) {

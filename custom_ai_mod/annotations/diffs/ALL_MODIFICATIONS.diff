@@ -488,6 +488,91 @@
  
 
 
+### MOD-06: com/rayneo/airuntime/controller/ASRTask.smali
+--- orig/ASRTask.smali
++++ patched/ASRTask.smali
+@@ -334,8 +334,14 @@
+ 
+ .method private final nativeOnAsrResult(Ljava/lang/String;Z)V
+     .registers 14
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-06D | Feed Proactive AI ambient ASR clauses into SubtextGalgameEngine] ====================
++    iget-object v0, p0, Lcom/rayneo/airuntime/controller/ASRTask;->name:Ljava/lang/String;
++    invoke-static {p0, v0, p1, p2}, Lcom/rayneo/customai/CustomAiHooks;->onAsrTaskResult(Lcom/rayneo/airuntime/controller/ASRTask;Ljava/lang/String;Ljava/lang/String;Z)V
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-06D] ====================
++
++
+     invoke-static {}, Lcom/rayneo/airuntime/AiRuntimeNativeKt;->getLoggerBridge()Lcom/rayneo/airuntime/bridge/RayNeoLoggerBridge;
+ 
+     move-result-object v0
+ 
+@@ -611,8 +617,19 @@
+ .end method
+ 
+ .method private final nativeOnProactiveHint(Ljava/lang/String;ZLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)V
+     .registers 19
++
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-06E | Suppress stock encyclopedic C++ hints when SubtextGalgameEngine owns Proactive AI] ====================
++    iget-object v0, p0, Lcom/rayneo/airuntime/controller/ASRTask;->name:Ljava/lang/String;
++    move-object/from16 v1, p3
++    invoke-static {p0, v0, p1, p2, v1}, Lcom/rayneo/customai/CustomAiHooks;->onAsrTaskProactiveHint(Lcom/rayneo/airuntime/controller/ASRTask;Ljava/lang/String;Ljava/lang/String;ZLjava/lang/String;)Z
++    move-result v0
++    if-eqz v0, :cond_custom_ai_proactive_pass
++    return-void
++    :cond_custom_ai_proactive_pass
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-06E] ====================
++
+ 
+     invoke-static {}, Lcom/rayneo/airuntime/AiRuntimeNativeKt;->getLoggerBridge()Lcom/rayneo/airuntime/bridge/RayNeoLoggerBridge;
+ 
+     move-result-object v0
+@@ -936,8 +953,14 @@
+ 
+ .method public final initTask(Lcom/rayneo/airuntime/controller/RayNeoASRConfig;Lcom/rayneo/airuntime/bridge/AudioRecorderBridge$AudioRecorderAdapter;Lcom/rayneo/airuntime/controller/ASRResultListener;)Z
+     .registers 5
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-06A | Register ASRTask for Disco Elysium Subtext & GALGAME Options when Proactive AI starts] ====================
++    iget-object v0, p0, Lcom/rayneo/airuntime/controller/ASRTask;->name:Ljava/lang/String;
++    invoke-static {p0, v0, p1, p3}, Lcom/rayneo/customai/CustomAiHooks;->onAsrTaskInit(Lcom/rayneo/airuntime/controller/ASRTask;Ljava/lang/String;Lcom/rayneo/airuntime/controller/RayNeoASRConfig;Lcom/rayneo/airuntime/controller/ASRResultListener;)V
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-06A] ====================
++
++
+     const-string v0, "config"
+ 
+     invoke-static {p1, v0}, Lkotlin/jvm/internal/r;->f(Ljava/lang/Object;Ljava/lang/String;)V
+ 
+@@ -1008,8 +1031,14 @@
+ 
+ .method public final releaseTask()Z
+     .registers 3
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-06C | Clean up Proactive AI Subtext session state on stop/release] ====================
++    iget-object v0, p0, Lcom/rayneo/airuntime/controller/ASRTask;->name:Ljava/lang/String;
++    invoke-static {p0, v0}, Lcom/rayneo/customai/CustomAiHooks;->onAsrTaskStop(Lcom/rayneo/airuntime/controller/ASRTask;Ljava/lang/String;)V
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-06C] ====================
++
++
+     iget-boolean v0, p0, Lcom/rayneo/airuntime/controller/ASRTask;->isInit:Z
+ 
+     if-eqz v0, :cond_15
+ 
+@@ -1179,8 +1208,14 @@
+ 
+ .method public final stopTask()Z
+     .registers 7
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-06B | Clean up Proactive AI Subtext session state on stop/release] ====================
++    iget-object v0, p0, Lcom/rayneo/airuntime/controller/ASRTask;->name:Ljava/lang/String;
++    invoke-static {p0, v0}, Lcom/rayneo/customai/CustomAiHooks;->onAsrTaskStop(Lcom/rayneo/airuntime/controller/ASRTask;Ljava/lang/String;)V
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-06B] ====================
++
++
+     iget-boolean v0, p0, Lcom/rayneo/airuntime/controller/ASRTask;->destroyed:Z
+ 
+     const/4 v1, 0x0
+ 
+
+
 ### MOD-05: com/rayneo/rayneo_venus_sdk_plugin/o4.smali
 --- orig/o4.smali
 +++ patched/o4.smali
@@ -523,4 +608,27 @@
      move-object/from16 v0, p0
  
      move-object/from16 v1, p1
+
+
+### MOD-07: im0/c0.smali
+--- orig/c0.smali
++++ patched/c0.smali
+@@ -499,8 +499,17 @@
+ 
+ .method public static final a(Lim0/c0;Ljava/lang/String;)V
+     .registers 5
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-07 | Intercept Live Captions / Translate payload for Disco Elysium Subtext & GALGAME Options] ====================
++    invoke-static {p0, p1}, Lcom/rayneo/customai/CustomAiHooks;->onCaptionForwardPayload(Ljava/lang/Object;Ljava/lang/String;)Ljava/lang/String;
++    move-result-object p1
++    if-nez p1, :cond_custom_ai_cap_pass
++    return-void
++    :cond_custom_ai_cap_pass
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-07] ====================
++
++
+     invoke-virtual {p0}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
+ 
+     invoke-static {p1}, Lim0/h0;->d(Ljava/lang/String;)Ljava/lang/String;
+ 
 

@@ -589,6 +589,116 @@ public final class CustomAiSettingsDialog {
             }
         });
 
+        // ==================== Card 2.5: Disco Elysium Subtext & GALGAME Options ====================
+        LinearLayout cardSubtext = addCardSection(activity, root, "🎭 极乐迪斯科：潜台词解码 + GALGAME 嘴替");
+
+        final ToggleRow swSubtextMode = new ToggleRow(
+                activity,
+                "开启潜台词解码 + 对话选项外挂",
+                "开启后接管「有问必答」与「实时字幕」，把人话翻译成真心话并刷出第一人称嘴替（无潜台词自动静默 [PASS]）",
+                cfg.enableSubtextMode);
+        cardSubtext.addView(swSubtextMode);
+
+        final String[] subtextScopeValues = new String[]{
+                CustomAiConfig.SUBTEXT_SCOPE_BOTH,
+                CustomAiConfig.SUBTEXT_SCOPE_PROACTIVE,
+                CustomAiConfig.SUBTEXT_SCOPE_CAPTION
+        };
+        addFieldLabel(activity, cardSubtext, "生效宿主入口", true);
+        final SegmentSelector segSubtextScope = new SegmentSelector(
+                activity,
+                new String[]{"双通道全开", "仅「有问必答」", "仅「实时字幕」"},
+                11f
+        );
+        int initScopeIdx = 0;
+        for (int i = 0; i < subtextScopeValues.length; i++) {
+            if (subtextScopeValues[i].equalsIgnoreCase(cfg.subtextScope)) {
+                initScopeIdx = i;
+                break;
+            }
+        }
+        segSubtextScope.setSelectedIndex(initScopeIdx);
+        cardSubtext.addView(segSubtextScope, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        addFieldLabel(activity, cardSubtext, "每次刷出 GALGAME 嘴替选项数（支持语音切换）", true);
+        final SegmentSelector segSubtextOptCount = new SegmentSelector(
+                activity,
+                new String[]{"2 个选项 (A稳妥 / B破局)", "3 个选项 (A高情商 / B破局 / C整活)"},
+                11f
+        );
+        segSubtextOptCount.setSelectedIndex(CustomAiConfig.normalizeSubtextOptionCount(cfg.subtextOptionCount) == 3 ? 1 : 0);
+        cardSubtext.addView(segSubtextOptCount, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        final String[] subtextSceneValues = new String[]{
+                CustomAiConfig.SUBTEXT_SCENE_AUTO,
+                CustomAiConfig.SUBTEXT_SCENE_WORK,
+                CustomAiConfig.SUBTEXT_SCENE_LOVE,
+                CustomAiConfig.SUBTEXT_SCENE_SOCIAL
+        };
+        addFieldLabel(activity, cardSubtext, "对话剧本滤镜（支持语音：开启哄人模式 / 开启职场模式）", true);
+        final SegmentSelector segSubtextScene = new SegmentSelector(
+                activity,
+                new String[]{"🎭 自动检定", "💼 职场博弈", "❤️ 恋爱求生", "🍻 社交接梗"},
+                11f
+        );
+        int initSceneIdx = 0;
+        for (int i = 0; i < subtextSceneValues.length; i++) {
+            if (subtextSceneValues[i].equalsIgnoreCase(cfg.subtextScene)) {
+                initSceneIdx = i;
+                break;
+            }
+        }
+        segSubtextScene.setSelectedIndex(initSceneIdx);
+        cardSubtext.addView(segSubtextScene, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        final String[] subtextStyleValues = new String[]{
+                CustomAiConfig.SUBTEXT_STYLE_DISCO,
+                CustomAiConfig.SUBTEXT_STYLE_CLEAN
+        };
+        addFieldLabel(activity, cardSubtext, "眼镜 HUD 提示风格", true);
+        final SegmentSelector segSubtextStyle = new SegmentSelector(
+                activity,
+                new String[]{"🎲 极乐迪斯科人格检定风", "⚡ 极简实战风"},
+                11f
+        );
+        segSubtextStyle.setSelectedIndex(
+                CustomAiConfig.SUBTEXT_STYLE_CLEAN.equalsIgnoreCase(cfg.subtextStyle) ? 1 : 0);
+        cardSubtext.addView(segSubtextStyle, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        addFieldLabel(activity, cardSubtext, "当前局势底牌 / 关系备注（选填，让解码准度翻倍）", true);
+        final EditText etSubtextNote = makeEdit(
+                activity, "例：甲方李总，我方底价15w / 对象生闷气刚忘回消息", cfg.subtextContextNote,
+                InputType.TYPE_CLASS_TEXT, false);
+        cardSubtext.addView(etSubtextNote);
+
+        addFieldLabel(activity, cardSubtext, "潜台词专用极速模型（选填，留空复用主模型并自动0思考）", true);
+        final EditText etSubtextFastModel = makeEdit(
+                activity, "留空跟随主模型（如 gemini-4-hydrogen / gpt-6-luna）", cfg.subtextFastModel,
+                InputType.TYPE_CLASS_TEXT, true);
+        cardSubtext.addView(etSubtextFastModel);
+
+        final Runnable saveSubtextImmediate = new Runnable() {
+            @Override
+            public void run() {
+                CustomAiConfig immediate = CustomAiConfig.load(activity);
+                immediate.enableSubtextMode = swSubtextMode.isChecked();
+                immediate.subtextScope = subtextScopeValues[segSubtextScope.getSelectedIndex()];
+                immediate.subtextOptionCount = segSubtextOptCount.getSelectedIndex() == 1 ? 3 : 2;
+                immediate.subtextScene = subtextSceneValues[segSubtextScene.getSelectedIndex()];
+                immediate.subtextStyle = subtextStyleValues[segSubtextStyle.getSelectedIndex()];
+                immediate.save(activity);
+            }
+        };
+        swSubtextMode.setOnChangeListener(saveSubtextImmediate);
+        segSubtextScope.setOnChangedListener(saveSubtextImmediate);
+        segSubtextOptCount.setOnChangedListener(saveSubtextImmediate);
+        segSubtextScene.setOnChangedListener(saveSubtextImmediate);
+        segSubtextStyle.setOnChangedListener(saveSubtextImmediate);
+
         // ==================== Card 3: Endpoint & Model ====================
         LinearLayout cardApi = addCardSection(activity, root, "🌐 接口协议与模型配置");
 
@@ -964,6 +1074,19 @@ public final class CustomAiSettingsDialog {
                 cfg.enableBuiltinSkills = swBuiltinSkills.isChecked();
                 cfg.mcpServersJson = etMcpServers.getText().toString().trim();
                 cfg.customSkillsJson = etCustomSkills.getText().toString().trim();
+                cfg.enableSubtextMode = swSubtextMode.isChecked();
+                int scIdx = segSubtextScope.getSelectedIndex();
+                cfg.subtextScope = (scIdx >= 0 && scIdx < subtextScopeValues.length)
+                        ? subtextScopeValues[scIdx] : CustomAiConfig.SUBTEXT_SCOPE_BOTH;
+                cfg.subtextOptionCount = segSubtextOptCount.getSelectedIndex() == 1 ? 3 : 2;
+                int snIdx = segSubtextScene.getSelectedIndex();
+                cfg.subtextScene = (snIdx >= 0 && snIdx < subtextSceneValues.length)
+                        ? subtextSceneValues[snIdx] : CustomAiConfig.SUBTEXT_SCENE_AUTO;
+                int stIdx = segSubtextStyle.getSelectedIndex();
+                cfg.subtextStyle = (stIdx >= 0 && stIdx < subtextStyleValues.length)
+                        ? subtextStyleValues[stIdx] : CustomAiConfig.SUBTEXT_STYLE_DISCO;
+                cfg.subtextContextNote = etSubtextNote.getText().toString().trim();
+                cfg.subtextFastModel = etSubtextFastModel.getText().toString().trim();
                 cfg.skillRouteTimeoutMs = parseIntSafe(etRouteMs.getText().toString(), 2000);
                 cfg.showFloatingButton = swFloating.isChecked();
                 cfg.showCallToast = swToast.isChecked();

@@ -1,0 +1,20 @@
+--- orig/c0.smali
++++ patched/c0.smali
+@@ -499,8 +499,17 @@
+ 
+ .method public static final a(Lim0/c0;Ljava/lang/String;)V
+     .registers 5
+ 
++    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-07 | Intercept Live Captions / Translate payload for Disco Elysium Subtext & GALGAME Options] ====================
++    invoke-static {p0, p1}, Lcom/rayneo/customai/CustomAiHooks;->onCaptionForwardPayload(Ljava/lang/Object;Ljava/lang/String;)Ljava/lang/String;
++    move-result-object p1
++    if-nez p1, :cond_custom_ai_cap_pass
++    return-void
++    :cond_custom_ai_cap_pass
++    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-07] ====================
++
++
+     invoke-virtual {p0}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
+ 
+     invoke-static {p1}, Lim0/h0;->d(Ljava/lang/String;)Ljava/lang/String;
+ 

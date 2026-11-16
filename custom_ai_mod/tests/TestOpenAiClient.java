@@ -1,3 +1,7 @@
+import com.rayneo.airuntime.controller.ASRResultListener;
+import com.rayneo.airuntime.controller.ASRTask;
+import com.rayneo.airuntime.controller.RayNeoASRConfig;
+import com.rayneo.airuntime.controller.RayNeoProactiveHint;
 import com.rayneo.customai.ConversationMemory;
 import com.rayneo.customai.CustomAiCallLog;
 import com.rayneo.customai.CustomAiConfig;
@@ -6,6 +10,7 @@ import com.rayneo.customai.JsonMini;
 import com.rayneo.customai.LyricsTeleprompterBridge;
 import com.rayneo.customai.McpSkillManager;
 import com.rayneo.customai.OpenAiApiClient;
+import com.rayneo.customai.SubtextGalgameEngine;
 import com.rayneo.customai.SystemMediaBridge;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
@@ -118,6 +123,7 @@ public final class TestOpenAiClient {
             testLyricsTeleprompterUnitAndMockHttp(server, "http://127.0.0.1:" + port);
             testBilingualAndRomajiLyrics(server, "http://127.0.0.1:" + port);
             testMcpAndSkillsEngine(server, "http://127.0.0.1:" + port);
+            testSubtextGalgameEngine(server, "http://127.0.0.1:" + port);
             testR8DynamicCoreConnectReflection();
             System.out.println("ALL TESTS PASSED!");
         } finally {
@@ -1265,6 +1271,259 @@ public final class TestOpenAiClient {
         String fallbackAns = OpenAiApiClient.streamChat(epFallback, null, "你好", null, null);
         assertEq("降级纯文本成功", fallbackAns, "auto-retry without tools on HTTP 400");
         assertEq(2, fallbackCalls[0], "fallback retried once without tools");
+    }
+
+    // ===== Mock Caption Hub (matching im0/c0 + im0/f structure) =====
+    public enum MockCaptionModeEnum {
+        BILINGUAL_MODE(false),
+        TRANSCRIPTION_ONLY_MODE(true);
+
+        @SuppressWarnings("unused")
+        private final boolean isTranscription;
+        MockCaptionModeEnum(boolean isTranscription) {
+            this.isTranscription = isTranscription;
+        }
+    }
+
+    public static final class MockCaptionHubC0 {
+        public MockCaptionModeEnum mode = MockCaptionModeEnum.BILINGUAL_MODE;
+        public final List<String> forwardedPayloads = java.util.Collections.synchronizedList(new ArrayList<String>());
+
+        public static void a(MockCaptionHubC0 self, String jsonString) {
+            String out = CustomAiHooks.onCaptionForwardPayload(self, jsonString);
+            if (out != null) {
+                self.forwardedPayloads.add(out);
+            }
+        }
+    }
+
+    private static void testSubtextGalgameEngine(HttpServer server, final String mockHost) throws Exception {
+        SubtextGalgameEngine.clearStateForTest();
+        try {
+            // 1. Voice commands & Config serialization roundtrip (2 vs 3 options, scene, scope, style)
+            assertEq(SubtextGalgameEngine.CMD_ENABLE,
+                    SubtextGalgameEngine.matchVoiceCommand("小雷小雷，开启潜台词模式"),
+                    "voice cmd enable subtext");
+            assertEq(SubtextGalgameEngine.CMD_SCENE_LOVE,
+                    SubtextGalgameEngine.matchVoiceCommand("切换到哄人模式"),
+                    "voice cmd love scene");
+            assertEq(SubtextGalgameEngine.CMD_SCENE_WORK,
+                    SubtextGalgameEngine.matchVoiceCommand("开启甲方模式"),
+                    "voice cmd work scene");
+            assertEq(SubtextGalgameEngine.CMD_OPTIONS_3,
+                    SubtextGalgameEngine.matchVoiceCommand("潜台词改成三个选项"),
+                    "voice cmd 3 options");
+            assertEq(SubtextGalgameEngine.CMD_OPTIONS_2,
+                    SubtextGalgameEngine.matchVoiceCommand("潜台词改成两个选项"),
+                    "voice cmd 2 options");
+            assertEq(null,
+                    CustomAiHooks.classifySkillOrRealtimeIntent("开启潜台词模式"),
+                    "subtext voice cmd bypasses RayClaw");
+
+            CustomAiConfig cfg1 = new CustomAiConfig();
+            cfg1.apiKey = "sk-subtext";
+            cfg1.enableSubtextMode = true;
+            cfg1.subtextScope = CustomAiConfig.SUBTEXT_SCOPE_BOTH;
+            cfg1.subtextOptionCount = 3;
+            cfg1.subtextScene = CustomAiConfig.SUBTEXT_SCENE_LOVE;
+            cfg1.subtextStyle = CustomAiConfig.SUBTEXT_STYLE_DISCO;
+            cfg1.subtextContextNote = "纪念日加班迟到";
+            CustomAiConfig cfg2 = CustomAiConfig.fromJsonString(cfg1.toJsonString());
+            assertEq(3, cfg2.subtextOptionCount, "subtextOptionCount=3 roundtrip");
+            assertEq(CustomAiConfig.SUBTEXT_SCENE_LOVE, cfg2.subtextScene, "subtextScene roundtrip");
+            assertEq("纪念日加班迟到", cfg2.subtextContextNote, "subtextContextNote roundtrip");
+
+            // 2. Anti-noise filler gate: pure fillers skipped, but short high-alert reverse words ("没事" / "随便") MUST trigger!
+            assertEq(true, SubtextGalgameEngine.isTrivialFillerUtterance("嗯嗯"), "filler 嗯嗯 skipped");
+            assertEq(true, SubtextGalgameEngine.isTrivialFillerUtterance("好的好的"), "filler 好的 skipped");
+            assertEq(false, SubtextGalgameEngine.isTrivialFillerUtterance("没事。"), "reverse-meaning 没事 MUST NOT be skipped!");
+            assertEq(false, SubtextGalgameEngine.isTrivialFillerUtterance("随便你"), "reverse-meaning 随便你 MUST NOT be skipped!");
+
+            // 3. Card parser (2 options vs 3 options + [PASS] silent token) + GALGAME Echo Branch Detection
+            assertEq(true, SubtextGalgameEngine.parseSubtextCard("[PASS]", 2).isPass, "[PASS] recognized");
+            String sampleRaw3 = "⚡[同理心·高危] 反话！嫌你重友轻色\n"
+                    + "A(哄) 刚推掉了，带你去吃那家火锅\n"
+                    + "B(邀) 一起去呗，散场正好去逛街\n"
+                    + "C(整活) 遵命长官！十点前准时负荆请罪";
+            SubtextGalgameEngine.SubtextCard card2 = SubtextGalgameEngine.parseSubtextCard(sampleRaw3, 2);
+            assertEq(2, card2.options.size(), "optionCount=2 caps at A/B");
+            SubtextGalgameEngine.SubtextCard card3 = SubtextGalgameEngine.parseSubtextCard(sampleRaw3, 3);
+            assertEq(3, card3.options.size(), "optionCount=3 keeps A/B/C");
+            assertEq("⚡[同理心·高危] 反话！嫌你重友轻色", card3.headerLine, "card3 headerLine");
+
+            SubtextGalgameEngine.recordGeneratedOptions(card3.options);
+            SubtextGalgameEngine.OptionChoice picked =
+                    SubtextGalgameEngine.detectSelectedOption("我已经刚推掉了带你去吃那家火锅啦");
+            if (picked == null || !"A".equals(picked.key)) {
+                throw new AssertionError("Expected GALGAME echo branch A match, got: " + (picked == null ? "null" : picked.key));
+            }
+            assertEq(null, SubtextGalgameEngine.detectSelectedOption("我已经刚推掉了带你去吃那家火锅啦"),
+                    "echo options consumed once after selection");
+
+            // 4. Mock LLM endpoint for Subtext Engine (Proactive AI + Live Captions)
+            server.createContext("/subtext/v1/chat/completions", new HttpHandler() {
+                @Override
+                public void handle(HttpExchange ex) throws IOException {
+                    String body = readAll(ex.getRequestBody());
+                    Map<String, Object> req = JsonMini.parseObject(body);
+                    // Verify reasoningEffort is forced empty for zero-latency HUD output!
+                    if (req.containsKey("reasoning_effort")) {
+                        throw new AssertionError("Subtext request MUST omit reasoning_effort for 0ms TTFT!");
+                    }
+                    ex.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
+                    ex.sendResponseHeaders(200, 0);
+                    try (OutputStream os = ex.getResponseBody()) {
+                        if (body.contains("服务员麻烦加点水")) {
+                            writeSse(os, "data: {\"choices\":[{\"delta\":{\"content\":\"[PASS]\"}}]}\n\n");
+                        } else if (body.contains("内部再沉淀一下")) {
+                            writeSse(os, "data: {\"choices\":[{\"delta\":{\"content\":\"◆[修辞学·看穿] 嫌贵想白嫖，准备鸽\\n\"}}]}\n\n");
+                            writeSse(os, "data: {\"choices\":[{\"delta\":{\"content\":\"A(探底) 是卡在预算还是上线节点？\\nB(守界) 先跑小范围验证，周五对齐\"}}]}\n\n");
+                        } else {
+                            writeSse(os, "data: {\"choices\":[{\"delta\":{\"content\":\"⚡[同理心·高危] 绝对别去！在试探你\\nA(哄) 秒推局去给你买奶茶\\nB(邀) 叫上你一起去才好玩\\nC(莽) 遵命十点前准时回家\"}}]}\n\n");
+                        }
+                        writeSse(os, "data: [DONE]\n\n");
+                    }
+                }
+            });
+
+            CustomAiConfig liveCfg = new CustomAiConfig();
+            liveCfg.enabled = true;
+            liveCfg.apiProtocol = OpenAiApiClient.PROTO_CHAT_COMPLETIONS;
+            liveCfg.baseUrl = mockHost + "/subtext/v1";
+            liveCfg.apiKey = "sk-subtext";
+            liveCfg.model = "gemini-4-hydrogen";
+            liveCfg.reasoningEffort = "high"; // Should be stripped automatically by toSubtextEndpointConfig!
+            liveCfg.enableSubtextMode = true;
+            liveCfg.subtextScope = CustomAiConfig.SUBTEXT_SCOPE_BOTH;
+            liveCfg.subtextOptionCount = 3;
+            SubtextGalgameEngine.setTestConfigOverride(liveCfg);
+
+            // 5. Channel 1 End-to-End: Proactive AI ("venus_proactive_ai_asr") multi-clause merge + RayNeoProactiveHint JSON
+            ASRTask teleprompterTask = new ASRTask("venus_teleprompter_asr");
+            assertEq(false,
+                    CustomAiHooks.onAsrTaskProactiveHint(teleprompterTask, "venus_teleprompter_asr", "x", true, "1"),
+                    "teleprompter ASRTask is never touched");
+
+            ASRTask proactiveTask = new ASRTask(SubtextGalgameEngine.PROACTIVE_TASK_NAME);
+            RayNeoASRConfig asrCfg = new RayNeoASRConfig();
+            asrCfg.setBizType(SubtextGalgameEngine.PROACTIVE_BIZ_TYPE);
+            final java.util.concurrent.CountDownLatch hintLatch = new java.util.concurrent.CountDownLatch(1);
+            final RayNeoProactiveHint[] finalHintHolder = new RayNeoProactiveHint[1];
+
+            CustomAiHooks.onAsrTaskInit(proactiveTask, SubtextGalgameEngine.PROACTIVE_TASK_NAME, asrCfg, new ASRResultListener() {
+                @Override public void onAsrResult(String asr, boolean finished) {}
+                @Override public void onAudioRecordEnd() {}
+                @Override public void onAudioRecordStart() {}
+                @Override public void onError(int errorCode, String errorMessage) {}
+                @Override public void onStartResult(boolean success, String message) {}
+                @Override public void onVadStatusChange(int status) {}
+                @Override
+                public void onProactiveHint(RayNeoProactiveHint hint) {
+                    if (hint.isFinish()) {
+                        finalHintHolder[0] = hint;
+                        hintLatch.countDown();
+                    }
+                }
+            });
+
+            assertEq(true,
+                    CustomAiHooks.onAsrTaskProactiveHint(proactiveTask, SubtextGalgameEngine.PROACTIVE_TASK_NAME, "百科废话", true, "1"),
+                    "stock proactive hint suppressed");
+
+            // Simulate breathing pause across 2 clauses -> merged into 1 single subtext card!
+            CustomAiHooks.onAsrTaskResult(proactiveTask, SubtextGalgameEngine.PROACTIVE_TASK_NAME, "没事呀", true);
+            Thread.sleep(100L);
+            CustomAiHooks.onAsrTaskResult(proactiveTask, SubtextGalgameEngine.PROACTIVE_TASK_NAME, "你去跟他们聚吧不用管我", true);
+
+            if (!hintLatch.await(4000L, java.util.concurrent.TimeUnit.MILLISECONDS) || finalHintHolder[0] == null) {
+                throw new AssertionError("Timed out waiting for Proactive AI Subtext RayNeoProactiveHint!");
+            }
+            Map<String, Object> hintJsonObj = JsonMini.parseObject(finalHintHolder[0].getText());
+            assertEq("⚡[同理心·高危] 绝对别去！在试探你",
+                    JsonMini.getString(hintJsonObj, "question"),
+                    "ProactiveHint JSON question -> HUD card header");
+            String hintAnswer = JsonMini.getString(hintJsonObj, "answer");
+            if (!hintAnswer.contains("A(哄) 秒推局去给你买奶茶") || !hintAnswer.contains("C(莽)")) {
+                throw new AssertionError("ProactiveHint JSON answer missing 3 options: " + hintAnswer);
+            }
+            CustomAiHooks.onAsrTaskStop(proactiveTask, SubtextGalgameEngine.PROACTIVE_TASK_NAME);
+
+            // 6. Channel 2 End-to-End: Live Captions / Translate Hub (MOD-07) in BOTH Bilingual & Pure Transcription modes!
+            liveCfg.subtextOptionCount = 2; // Switch to 2 options!
+            MockCaptionHubC0 hub = new MockCaptionHubC0();
+            hub.mode = MockCaptionModeEnum.BILINGUAL_MODE;
+
+            // 6a. Host (self) speech passes straight through with finished=true without LLM decode
+            MockCaptionHubC0.a(hub, "{\"roundId\":\"r0\",\"role\":\"host\",\"text\":\"我们看一下报价\",\"translationText\":\"\",\"finished\":true}");
+            assertEq(1, hub.forwardedPayloads.size(), "host speech forwarded once immediately");
+            assertEq(true, JsonMini.parseObject(hub.forwardedPayloads.get(0)).get("finished"), "host speech keeps finished=true");
+
+            // 6b. Guest speech with subtext: holds seal (finished=false) immediately, then seals (finished=true) with decoded subtext!
+            hub.forwardedPayloads.clear();
+            MockCaptionHubC0.a(hub, "{\"roundId\":\"r1\",\"role\":\"guest\",\"text\":\"这个方案很有前瞻性，我们内部再沉淀一下\",\"translationText\":\"This plan is visionary\",\"finished\":true}");
+            assertEq(false, JsonMini.parseObject(hub.forwardedPayloads.get(0)).get("finished"),
+                    "immediate return holds finished=false so segment stays unsealed");
+
+            long deadline = System.currentTimeMillis() + 4000L;
+            Map<String, Object> sealedPayload = null;
+            while (System.currentTimeMillis() < deadline) {
+                synchronized (hub.forwardedPayloads) {
+                    Map<String, Object> last = JsonMini.parseObject(hub.forwardedPayloads.get(hub.forwardedPayloads.size() - 1));
+                    if (Boolean.TRUE.equals(last.get("finished"))) {
+                        sealedPayload = last;
+                        break;
+                    }
+                }
+                Thread.sleep(50L);
+            }
+            if (sealedPayload == null) {
+                throw new AssertionError("Timed out waiting for Caption Hub sealed subtext payload!");
+            }
+            String subTrans = JsonMini.getString(sealedPayload, "translationText");
+            if (!subTrans.contains("◆[修辞学·看穿] 嫌贵想白嫖") || !subTrans.contains("A(探底)") || subTrans.contains("C(")) {
+                throw new AssertionError("Unexpected 2-option bilingual subtext translationText: " + subTrans);
+            }
+
+            // 6c. Pure Transcription mode (isTranscription == true): appends subtext card directly onto "text"!
+            hub.mode = MockCaptionModeEnum.TRANSCRIPTION_ONLY_MODE;
+            hub.forwardedPayloads.clear();
+            MockCaptionHubC0.a(hub, "{\"roundId\":\"r2\",\"role\":\"guest\",\"text\":\"这个方案我们内部再沉淀一下\",\"translationText\":\"\",\"finished\":true}");
+            Map<String, Object> sealedPure = null;
+            deadline = System.currentTimeMillis() + 4000L;
+            while (System.currentTimeMillis() < deadline) {
+                synchronized (hub.forwardedPayloads) {
+                    Map<String, Object> last = JsonMini.parseObject(hub.forwardedPayloads.get(hub.forwardedPayloads.size() - 1));
+                    if (Boolean.TRUE.equals(last.get("finished"))) {
+                        sealedPure = last;
+                        break;
+                    }
+                }
+                Thread.sleep(50L);
+            }
+            if (sealedPure == null || !JsonMini.getString(sealedPure, "text").contains("B(守界)")) {
+                throw new AssertionError("Pure transcription mode failed to append subtext onto text: " + sealedPure);
+            }
+
+            // 6d. [PASS] mundane guest speech ("服务员麻烦加点水"): seals cleanly with ZERO subtext noise!
+            hub.forwardedPayloads.clear();
+            MockCaptionHubC0.a(hub, "{\"roundId\":\"r3\",\"role\":\"guest\",\"text\":\"服务员麻烦加点水\",\"translationText\":\"\",\"finished\":true}");
+            Map<String, Object> sealedPass = null;
+            deadline = System.currentTimeMillis() + 4000L;
+            while (System.currentTimeMillis() < deadline) {
+                synchronized (hub.forwardedPayloads) {
+                    Map<String, Object> last = JsonMini.parseObject(hub.forwardedPayloads.get(hub.forwardedPayloads.size() - 1));
+                    if (Boolean.TRUE.equals(last.get("finished"))) {
+                        sealedPass = last;
+                        break;
+                    }
+                }
+                Thread.sleep(50L);
+            }
+            assertEq("服务员麻烦加点水", JsonMini.getString(sealedPass, "text"), "[PASS] leaves mundane text completely clean");
+        } finally {
+            SubtextGalgameEngine.setTestConfigOverride(null);
+            SubtextGalgameEngine.clearStateForTest();
+        }
     }
 
     private static void writeSse(OutputStream os, String chunk) throws IOException {

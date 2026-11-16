@@ -20,6 +20,18 @@ public final class CustomAiConfig {
     public static final String LYRICS_MODE_ROMAJI = "romaji";
     public static final String LYRICS_MODE_TRILINGUAL = "trilingual";
 
+    public static final String SUBTEXT_SCOPE_BOTH = "both";
+    public static final String SUBTEXT_SCOPE_PROACTIVE = "proactive";
+    public static final String SUBTEXT_SCOPE_CAPTION = "caption";
+
+    public static final String SUBTEXT_SCENE_AUTO = "auto";
+    public static final String SUBTEXT_SCENE_WORK = "work";
+    public static final String SUBTEXT_SCENE_LOVE = "love";
+    public static final String SUBTEXT_SCENE_SOCIAL = "social";
+
+    public static final String SUBTEXT_STYLE_DISCO = "disco";
+    public static final String SUBTEXT_STYLE_CLEAN = "clean";
+
     private static final String FLUTTER_PREF_NAME = "FlutterSharedPreferences";
     private static final String FLUTTER_ASK_AI_OVERRIDE_KEY = "flutter.dev_ask_ai_transport_mode_override";
 
@@ -42,6 +54,14 @@ public final class CustomAiConfig {
     public boolean enableBuiltinSkills = true;
     public String mcpServersJson = "[]";
     public String customSkillsJson = "[]";
+
+    public boolean enableSubtextMode = true;
+    public String subtextScope = SUBTEXT_SCOPE_BOTH;
+    public int subtextOptionCount = 2;
+    public String subtextScene = SUBTEXT_SCENE_AUTO;
+    public String subtextStyle = SUBTEXT_STYLE_DISCO;
+    public String subtextContextNote = "";
+    public String subtextFastModel = "";
 
     public String apiProtocol = OpenAiApiClient.PROTO_CHAT_COMPLETIONS;
     public String baseUrl = "https://api.openai.com/v1";
@@ -74,6 +94,13 @@ public final class CustomAiConfig {
         c.enableBuiltinSkills = sp.getBoolean("enableBuiltinSkills", true);
         c.mcpServersJson = sp.getString("mcpServersJson", "[]");
         c.customSkillsJson = sp.getString("customSkillsJson", "[]");
+        c.enableSubtextMode = sp.getBoolean("enableSubtextMode", true);
+        c.subtextScope = normalizeSubtextScope(sp.getString("subtextScope", SUBTEXT_SCOPE_BOTH));
+        c.subtextOptionCount = normalizeSubtextOptionCount(sp.getInt("subtextOptionCount", 2));
+        c.subtextScene = normalizeSubtextScene(sp.getString("subtextScene", SUBTEXT_SCENE_AUTO));
+        c.subtextStyle = normalizeSubtextStyle(sp.getString("subtextStyle", SUBTEXT_STYLE_DISCO));
+        c.subtextContextNote = sp.getString("subtextContextNote", "");
+        c.subtextFastModel = sp.getString("subtextFastModel", "");
         int rawRouteMs = sp.getInt("skillRouteTimeoutMs", 3500);
         if (rawRouteMs == 2000 && !sp.contains("skillRouteTimeoutUpgradedV2")) {
             rawRouteMs = 3500;
@@ -115,6 +142,13 @@ public final class CustomAiConfig {
                 .putBoolean("enableBuiltinSkills", enableBuiltinSkills)
                 .putString("mcpServersJson", safe(mcpServersJson, "[]"))
                 .putString("customSkillsJson", safe(customSkillsJson, "[]"))
+                .putBoolean("enableSubtextMode", enableSubtextMode)
+                .putString("subtextScope", normalizeSubtextScope(subtextScope))
+                .putInt("subtextOptionCount", normalizeSubtextOptionCount(subtextOptionCount))
+                .putString("subtextScene", normalizeSubtextScene(subtextScene))
+                .putString("subtextStyle", normalizeSubtextStyle(subtextStyle))
+                .putString("subtextContextNote", subtextContextNote == null ? "" : subtextContextNote.trim())
+                .putString("subtextFastModel", subtextFastModel == null ? "" : subtextFastModel.trim())
                 .putInt("skillRouteTimeoutMs", Math.max(500, Math.min(10000, skillRouteTimeoutMs)))
                 .putBoolean("skillRouteTimeoutUpgradedV2", true)
                 .putString("apiProtocol", safe(apiProtocol, OpenAiApiClient.PROTO_CHAT_COMPLETIONS))
@@ -171,6 +205,40 @@ public final class CustomAiConfig {
         return ec;
     }
 
+    public boolean isSubtextEnabledForProactive() {
+        if (!enabled || !enableSubtextMode || !hasApiKey()) return false;
+        String sc = normalizeSubtextScope(subtextScope);
+        return SUBTEXT_SCOPE_BOTH.equals(sc) || SUBTEXT_SCOPE_PROACTIVE.equals(sc);
+    }
+
+    public boolean isSubtextEnabledForCaption() {
+        if (!enabled || !enableSubtextMode || !hasApiKey()) return false;
+        String sc = normalizeSubtextScope(subtextScope);
+        return SUBTEXT_SCOPE_BOTH.equals(sc) || SUBTEXT_SCOPE_CAPTION.equals(sc);
+    }
+
+    public OpenAiApiClient.EndpointConfig toSubtextEndpointConfig(String subtextSystemPrompt) {
+        OpenAiApiClient.EndpointConfig ec = toEndpointConfig();
+        String fast = subtextFastModel == null ? "" : subtextFastModel.trim();
+        if (!fast.isEmpty()) {
+            ec.model = fast;
+            ec.reasoningEffort = "";
+        } else if (OpenAiApiClient.isResponsesProtocol(ec.protocol)
+                && reasoningEffort != null && !reasoningEffort.trim().isEmpty()) {
+            // On /v1/responses reasoning models, downgrade medium/high -> low for minimal latency without HTTP 400
+            ec.reasoningEffort = "low";
+        } else {
+            ec.reasoningEffort = "";
+        }
+        ec.systemPrompt = subtextSystemPrompt;
+        ec.temperature = -1.0; // Omit temperature so reasoning/Gemini-4/GPT-5+ models never reject with HTTP 400
+        ec.maxTokens = Math.max(512, maxTokens);
+        ec.streamEnabled = true;
+        ec.timeoutSeconds = Math.min(20, Math.max(8, timeoutSeconds));
+        ec.toolExecutor = null;
+        return ec;
+    }
+
     public String toJsonString() {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("enabled", enabled);
@@ -187,6 +255,13 @@ public final class CustomAiConfig {
         m.put("enableBuiltinSkills", enableBuiltinSkills);
         m.put("mcpServersJson", safe(mcpServersJson, "[]"));
         m.put("customSkillsJson", safe(customSkillsJson, "[]"));
+        m.put("enableSubtextMode", enableSubtextMode);
+        m.put("subtextScope", normalizeSubtextScope(subtextScope));
+        m.put("subtextOptionCount", normalizeSubtextOptionCount(subtextOptionCount));
+        m.put("subtextScene", normalizeSubtextScene(subtextScene));
+        m.put("subtextStyle", normalizeSubtextStyle(subtextStyle));
+        m.put("subtextContextNote", subtextContextNote == null ? "" : subtextContextNote);
+        m.put("subtextFastModel", subtextFastModel == null ? "" : subtextFastModel);
         m.put("skillRouteTimeoutMs", skillRouteTimeoutMs);
         m.put("apiProtocol", apiProtocol);
         m.put("baseUrl", baseUrl);
@@ -222,6 +297,13 @@ public final class CustomAiConfig {
         c.enableBuiltinSkills = readBool(m, "enableBuiltinSkills", c.enableBuiltinSkills);
         c.mcpServersJson = readStr(m, "mcpServersJson", c.mcpServersJson);
         c.customSkillsJson = readStr(m, "customSkillsJson", c.customSkillsJson);
+        c.enableSubtextMode = readBool(m, "enableSubtextMode", c.enableSubtextMode);
+        c.subtextScope = normalizeSubtextScope(readStr(m, "subtextScope", c.subtextScope));
+        c.subtextOptionCount = normalizeSubtextOptionCount(readInt(m, "subtextOptionCount", c.subtextOptionCount));
+        c.subtextScene = normalizeSubtextScene(readStr(m, "subtextScene", c.subtextScene));
+        c.subtextStyle = normalizeSubtextStyle(readStr(m, "subtextStyle", c.subtextStyle));
+        c.subtextContextNote = readStr(m, "subtextContextNote", c.subtextContextNote);
+        c.subtextFastModel = readStr(m, "subtextFastModel", c.subtextFastModel);
         c.skillRouteTimeoutMs = readInt(m, "skillRouteTimeoutMs", c.skillRouteTimeoutMs);
         c.apiProtocol = readStr(m, "apiProtocol", c.apiProtocol);
         c.baseUrl = readStr(m, "baseUrl", c.baseUrl);
@@ -246,6 +328,34 @@ public final class CustomAiConfig {
         if (LYRICS_MODE_ROMAJI.equals(s)) return LYRICS_MODE_ROMAJI;
         if (LYRICS_MODE_TRILINGUAL.equals(s)) return LYRICS_MODE_TRILINGUAL;
         return LYRICS_MODE_BILINGUAL;
+    }
+
+    public static String normalizeSubtextScope(String raw) {
+        if (raw == null) return SUBTEXT_SCOPE_BOTH;
+        String s = raw.trim().toLowerCase(java.util.Locale.ROOT);
+        if (SUBTEXT_SCOPE_PROACTIVE.equals(s)) return SUBTEXT_SCOPE_PROACTIVE;
+        if (SUBTEXT_SCOPE_CAPTION.equals(s)) return SUBTEXT_SCOPE_CAPTION;
+        return SUBTEXT_SCOPE_BOTH;
+    }
+
+    public static int normalizeSubtextOptionCount(int count) {
+        return count == 3 ? 3 : 2;
+    }
+
+    public static String normalizeSubtextScene(String raw) {
+        if (raw == null) return SUBTEXT_SCENE_AUTO;
+        String s = raw.trim().toLowerCase(java.util.Locale.ROOT);
+        if (SUBTEXT_SCENE_WORK.equals(s)) return SUBTEXT_SCENE_WORK;
+        if (SUBTEXT_SCENE_LOVE.equals(s)) return SUBTEXT_SCENE_LOVE;
+        if (SUBTEXT_SCENE_SOCIAL.equals(s)) return SUBTEXT_SCENE_SOCIAL;
+        return SUBTEXT_SCENE_AUTO;
+    }
+
+    public static String normalizeSubtextStyle(String raw) {
+        if (raw == null) return SUBTEXT_STYLE_DISCO;
+        String s = raw.trim().toLowerCase(java.util.Locale.ROOT);
+        if (SUBTEXT_STYLE_CLEAN.equals(s)) return SUBTEXT_STYLE_CLEAN;
+        return SUBTEXT_STYLE_DISCO;
     }
 
     private static boolean readBool(Map<String, Object> m, String k, boolean def) {

@@ -26,6 +26,9 @@
   - **原版中日英文歌词精准命中**：专用歌词解析器完整保留 VIP/灰标无版权原曲（歌词接口免费返回），支持日语歌曲 `tns` 译名后缀匹配（如 `クリスマスソング (圣诞颂歌) - back number`）、多歌手分词（`/`、`&`、`、`）与时长对齐，自动剔除未请求的 `Cover/翻唱/伴奏/DJ/Live`；
   - **自动进入实时提词 · 整首零刷屏逐行推进**：每首歌仅在开场通过 `0x02 (countdown=3) -> fileShare -> 0x02 (code=7) -> 550ms 预览就绪 -> 0x03` 自动进入提词（**无需手动触碰镜腿播放键**），随后全程通过轻量 `0x08 ProgressUpdate` 毫秒级推进并自动锚定原词主行（双语/三语绝不跳行切半），整首零重传、零死机；
   - **无感避让与槽位隔离**：固定复用单一歌词槽位 DID（不污染用户原有提词文稿）并拦截专属回包避免官方 Flutter 冲突；唤醒「小雷小雷」期间自动暂挂推送，镜腿手动退出提词后本首不再强弹（切歌自动恢复）。
+- 🎭 **真人版《极乐迪斯科》：潜台词解码器 + GALGAME 对话选项（`SubtextGalgameEngine`）**：同时接管官方 **「有问必答 (`ASRTask`)」** 与 **「实时字幕 / 同传 (`CaptionHub`)」** 双通道，把人话实时翻译成真心话，并在眼镜 HUD 底部刷出 **2 个或 3 个** 可直接张嘴照念的第一人称嘴替：
+  - **四档剧本滤镜 + 局势底牌**：支持 **「🎭 自动检定 / 💼 职场博弈 / ❤️ 恋爱求生 / 🍻 社交接梗」** 与自定义局势底牌备注（如甲方底价、纪念日迟到等），支持《极乐迪斯科》内阁技能检定风（`⚡[同理心·高危]`、`◆[修辞学·看穿]`）与极简实战风一键切换；
+  - **三级防刷屏门控 + GALGAME 回声选支**：内置寒暄语气词 0ms 过滤（同时保留“没事/随便你”等短句高危反话）、大喘气停顿语义自动拼句、无潜台词日常白话 `[PASS]` 静默不亮屏，以及 **回声选支识别**（当你照着眼镜念出选项 A 时自动判定 `[我方已打出分支A]` 记入剧情记忆池，绝不误把自己的话再解码一遍！）。
 - 🧩 **轻量可扩展 MCP 与 Skills 技能引擎（`McpSkillManager`）**：双协议（`/v1/chat/completions` 与 `/v1/responses` 流式/非流式）原生支持多轮 Function Calling 工具调用闭环，遇到不支持 `tools` 的模型自动无感降级重试：
   - **内置眼镜本地技能**：开箱自带 `push_to_teleprompter`（一句话生成演讲提纲/要点直接投送到眼镜提词器常驻显示）、`clipboard_manage`（读取/翻译/总结手机剪贴板或将 AI 结果写入剪贴板）、`get_phone_status`（查询手机实时电量与播放状态），后续扩展新原生技能仅需调用 `McpSkillManager.registerBuiltinSkill(...)`；
   - **自定义 JSON Skills**：支持声明式 **Prompt 规范技能**（动态注入 SOP 指令）与 **HTTP Webhook 动作技能**（一键对接飞书/钉钉机器人、Notion、HomeAssistant、OpenClaw 等）；
@@ -186,6 +189,7 @@ adb install -r RayNeo_AI_1.0.25_CustomAI.apk
 
 | 场景分类 | 语音示例 | 实际执行引擎 |
 | :--- | :--- | :--- |
+| **🎭 潜台词解码 & GALGAME 嘴替** | 「开启潜台词模式」「切换到哄人模式」「开启职场模式」「潜台词改成三个选项」「切回原版有问必答」 | **本地 `SubtextGalgameEngine`**（接管「有问必答」与「实时字幕」，拆穿真心话并刷出 2~3 个第一人称嘴替） |
 | **📜 歌词联动 & 双语/罗马音** | 「打开歌词」「打开双语歌词」「打开罗马音」「切换到三语歌词」「仅显示原词」「关闭歌词」 | **本地 `LyricsTeleprompterBridge`**（多轨 `.lrc` 对齐 + 罗马音转写 + `BLE 0x14` 锚定逐行同步） |
 | **🧩 本地技能 & MCP 工具** | 「帮我拟个三分钟演讲提纲投到眼镜提词器上」「总结一下我手机剪贴板里的内容」 | **自定义大模型 + `McpSkillManager`**（多轮 Function Calling 调用内置技能 / Webhook / MCP Server） |
 | **🎤 语音搜歌点播** | 「我想听李荣浩的模特」「我想听李荣浩」「放一首晴天」「用QQ音乐放陈奕迅的十年」「我想听每日推荐」「打开私人FM」 | **本地 `SystemMediaBridge`**（检索正版曲库 + 播报歌名后无感后台拉起网易云音乐/QQ音乐直播） |
@@ -220,7 +224,8 @@ LovelyRayNeoio/
     ├── tests/
     │   └── TestOpenAiClient.java       # 双协议 SSE/JSON、意图分流、媒体点歌与歌词提词器协议单元测试
     └── src/com/rayneo/customai/
-        ├── CustomAiHooks.java          # 核心桥接调度器：系统播控 + 歌词联动 + 三层官方技能分流 + 自定义 LLM
+        ├── CustomAiHooks.java          # 核心桥接调度器：系统播控 + 歌词联动 + 潜台词外挂 + 官方技能分流 + 自定义 LLM
+        ├── SubtextGalgameEngine.java   # 《极乐迪斯科》潜台词解码 + GALGAME 对话选项双通道引擎（有问必答 + 实时字幕）
         ├── LyricsTeleprompterBridge.java# 多轨双语/罗马音 LRC 解析引擎 & 眼镜 BLE 提词器握手与毫秒级进度同步驱动
         ├── McpSkillManager.java        # 轻量可扩展 MCP (Streamable HTTP JSON-RPC 2.0) 与本地/Webhook/Prompt Skills 引擎
         ├── SystemMediaBridge.java      # Android MediaSessionManager 第三方播放器控制、语音点歌与实时曲目抓取
