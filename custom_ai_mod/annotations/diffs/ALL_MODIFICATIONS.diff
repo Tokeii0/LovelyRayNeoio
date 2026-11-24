@@ -7,13 +7,13 @@
      invoke-super {p0}, Landroid/app/Application;->onCreate()V
  
 +    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-01 | Init CustomAI on App Start] ====================
-+    const-string v0, "com.rayneo.rayneo_venus_sdk_plugin.o4"
++    const-string v0, "com.rayneo.rayneo_venus_sdk_plugin.r4"
 +    invoke-static {v0}, Lcom/rayneo/customai/LyricsTeleprompterBridge;->registerBridgeClassName(Ljava/lang/String;)V
 +    invoke-static/range {p0 .. p0}, Lcom/rayneo/customai/CustomAiHooks;->onAppCreate(Landroid/app/Application;)V
 +    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-01] ====================
 +
 +
-     sget-object v0, Lvm0/h;->a:Lvm0/h;
+     sget-object v0, Lym0/g;->a:Lym0/g;
  
      invoke-virtual {v0}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
  
@@ -40,21 +40,21 @@
 +    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-02A] ====================
 +
 +
-     sget-object v0, Lxm0/d;->a:Lxm0/d;
+     sget-object v0, Lan0/f;->a:Lan0/f;
  
      invoke-virtual {v0}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
  
 @@ -671,8 +684,13 @@
      .registers 4
  
-     invoke-super {p0}, Laq0/d;->onResume()V
+     invoke-super {p0}, Ldq0/d;->onResume()V
  
 +    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-02B | Attach Draggable CustomAI Floating Badge] ====================
 +    invoke-static/range {p0 .. p0}, Lcom/rayneo/customai/CustomAiHooks;->onMainActivityResume(Landroid/app/Activity;)V
 +    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-02B] ====================
 +
 +
-     sget-object v0, Lvm0/d;->a:Lvm0/d;
+     sget-object v0, Lym0/d;->a:Lym0/d;
  
      const-string v1, "ui.attached"
  
@@ -573,12 +573,12 @@
  
 
 
-### MOD-05: com/rayneo/rayneo_venus_sdk_plugin/o4.smali
---- orig/o4.smali
-+++ patched/o4.smali
+### MOD-05: com/rayneo/rayneo_venus_sdk_plugin/r4.smali
+--- orig/r4.smali
++++ patched/r4.smali
 @@ -2670,8 +2670,13 @@
  
- .method public static l(Lcom/rayneo/rayneo_venus_sdk_plugin/o4;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;[BLjava/lang/String;I)V
+ .method public static l(Lcom/rayneo/rayneo_venus_sdk_plugin/r4;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;[BLjava/lang/String;I)V
      .registers 14
  
 +    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-05B | Observe RayneoNet low-level outbound/inbound frames & errors] ====================
@@ -590,10 +590,10 @@
  
      and-int/2addr p7, v0
  
-@@ -4172,8 +4177,17 @@
+@@ -4098,8 +4103,17 @@
  .end method
  
- .method public final F(Ljava/lang/String;Ljava/util/Map;)V
+ .method public final E(Ljava/lang/String;Ljava/util/Map;)V
      .registers 20
 +
 +    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-05 | Observe & intercept RayneoNet BLE events for Lyrics <-> Teleprompter real-time sync] ====================
@@ -610,12 +610,12 @@
      move-object/from16 v1, p1
 
 
-### MOD-07: im0/c0.smali
---- orig/c0.smali
-+++ patched/c0.smali
+### MOD-07: jm0/b0.smali
+--- orig/b0.smali
++++ patched/b0.smali
 @@ -499,8 +499,17 @@
  
- .method public static final a(Lim0/c0;Ljava/lang/String;)V
+ .method public static final a(Ljm0/b0;Ljava/lang/String;)V
      .registers 5
  
 +    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-07 | Intercept Live Captions / Translate payload for Disco Elysium Subtext & GALGAME Options] ====================
@@ -629,6 +629,6 @@
 +
      invoke-virtual {p0}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
  
-     invoke-static {p1}, Lim0/h0;->d(Ljava/lang/String;)Ljava/lang/String;
+     invoke-static {p1}, Ljm0/g0;->d(Ljava/lang/String;)Ljava/lang/String;
  
 

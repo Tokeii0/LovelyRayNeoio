@@ -28,11 +28,15 @@ import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -194,22 +198,63 @@ public final class SystemMediaBridge {
         lastResolvedSongHint = new SongHint(platform, songId, songMid, title, artist);
     }
 
-    private static final Map<String, String> KNOWN_APP_LABELS = new HashMap<>();
+    private static final Map<String, String> KNOWN_APP_LABELS = new LinkedHashMap<>();
+    private static final List<MediaAppOption> CATALOG_MEDIA_APPS = new ArrayList<>();
+
+    public static final class MediaAppOption {
+        public final String packageName;
+        public final String appName;
+        public final boolean pureMusicApp;
+        public boolean installed;
+        public boolean activeSession;
+        public boolean playingNow;
+        public String activeSongPreview = "";
+
+        public MediaAppOption(String packageName, String appName, boolean pureMusicApp) {
+            this.packageName = safe(packageName).toLowerCase(Locale.ROOT);
+            this.appName = safe(appName);
+            this.pureMusicApp = pureMusicApp;
+        }
+    }
+
+    private static void regApp(String pkg, String label, boolean pureMusic) {
+        KNOWN_APP_LABELS.put(pkg, label);
+        CATALOG_MEDIA_APPS.add(new MediaAppOption(pkg, label, pureMusic));
+    }
+
     static {
-        KNOWN_APP_LABELS.put(PKG_NETEASE, "网易云音乐");
-        KNOWN_APP_LABELS.put(PKG_QQMUSIC, "QQ音乐");
-        KNOWN_APP_LABELS.put("com.luna.music", "汽水音乐");
-        KNOWN_APP_LABELS.put("com.kugou.android", "酷狗音乐");
-        KNOWN_APP_LABELS.put("cn.kuwo.player", "酷我音乐");
-        KNOWN_APP_LABELS.put("cmccwm.mobilemusic", "咪咕音乐");
-        KNOWN_APP_LABELS.put("com.apple.android.music", "Apple Music");
-        KNOWN_APP_LABELS.put("com.spotify.music", "Spotify");
-        KNOWN_APP_LABELS.put("com.miui.player", "小米音乐");
-        KNOWN_APP_LABELS.put("tv.danmaku.bili", "哔哩哔哩");
+        // Pure music players (pre-selected by default)
+        regApp(PKG_NETEASE, "网易云音乐", true);
+        regApp(PKG_QQMUSIC, "QQ音乐", true);
+        regApp("com.luna.music", "汽水音乐", true);
+        regApp("com.kugou.android", "酷狗音乐", true);
+        regApp("cn.kuwo.player", "酷我音乐", true);
+        regApp("com.apple.android.music", "Apple Music", true);
+        regApp("com.spotify.music", "Spotify", true);
+        regApp("com.google.android.apps.youtube.music", "YouTube Music", true);
+        regApp("cmccwm.mobilemusic", "咪咕音乐", true);
+        regApp("cn.wenyu.bodian", "波点音乐", true);
+        regApp("com.salt.music", "椒盐音乐 (Salt Player)", true);
+        regApp("cn.toside.music.mobile", "洛雪音乐 (LX Music)", true);
+        regApp("io.github.echomusic", "Echo 音乐", true);
+        regApp("fun.upup.musicfree", "MusicFree", true);
+        regApp("app.symfonik.music.player", "Symfonium", true);
+        regApp("com.maxmpz.audioplayer", "Poweramp", true);
+        regApp("com.miui.player", "小米音乐", true);
+        regApp("com.huawei.music", "华为音乐", true);
+        regApp("com.heytap.music", "OPPO 音乐", true);
+        regApp("com.android.bbkmusic", "vivo i音乐", true);
+
+        // Video / podcast / radio apps (unchecked by default, user can opt in manually)
+        regApp("tv.danmaku.bili", "哔哩哔哩", false);
+        regApp("com.ss.android.ugc.aweme", "抖音", false);
+        regApp("com.smile.gifmaker", "快手", false);
+        regApp("com.xingin.xhs", "小红书", false);
+        regApp("com.google.android.youtube", "YouTube", false);
+        regApp("com.ximalaya.ting.android", "喜马拉雅", false);
+        regApp("io.iftech.android.box", "小宇宙", false);
+        regApp("fm.qingting.qtradio", "蜻蜓FM", false);
         KNOWN_APP_LABELS.put("com.喜马拉雅.ting.android", "喜马拉雅");
-        KNOWN_APP_LABELS.put("com.ximalaya.ting.android", "喜马拉雅");
-        KNOWN_APP_LABELS.put("fm.qingting.qtradio", "蜻蜓FM");
-        KNOWN_APP_LABELS.put("io.github.echomusic", "Echo");
     }
 
     public static final class PlaySearchRequest {
@@ -589,9 +634,231 @@ public final class SystemMediaBridge {
     }
 
     public static TrackInfo getCurrentTrack(Context ctx) {
-        MediaController ctrl = findBestController(ctx);
+        MediaController ctrl = findBestController(ctx, null);
         if (ctrl == null) return null;
         return extractTrackInfo(ctx, ctrl);
+    }
+
+    /**
+     * Returns the best active track restricted to {@code allowedPackagesLower} (or unrestricted when {@code null}).
+     * If {@code allowedPackagesLower} is non-null and empty, returns {@code null}.
+     */
+    public static TrackInfo getCurrentTrackFiltered(Context ctx, Set<String> allowedPackagesLower) {
+        if (allowedPackagesLower != null && allowedPackagesLower.isEmpty()) {
+            return null;
+        }
+        MediaController ctrl = findBestController(ctx, allowedPackagesLower);
+        if (ctrl == null) return null;
+        return extractTrackInfo(ctx, ctrl);
+    }
+
+    /**
+     * Pure deterministic selector over extracted {@link TrackInfo} snapshots (shared logic & unit-testable).
+     */
+    public static TrackInfo pickBestTrackFiltered(
+            List<TrackInfo> candidates, String selfPkg, Set<String> allowedPackagesLower) {
+        if (candidates == null || candidates.isEmpty()) return null;
+        if (allowedPackagesLower != null && allowedPackagesLower.isEmpty()) return null;
+
+        TrackInfo firstPlaying = null;
+        TrackInfo firstWithMeta = null;
+        TrackInfo firstValid = null;
+
+        for (TrackInfo ti : candidates) {
+            if (ti == null) continue;
+            String pkg = safe(ti.packageName);
+            if (pkg.isEmpty() || pkg.equals(selfPkg) || pkg.startsWith("com.android.server.telecom")) {
+                continue;
+            }
+            if (allowedPackagesLower != null && !allowedPackagesLower.contains(pkg.toLowerCase(Locale.ROOT))) {
+                continue;
+            }
+            if (firstValid == null) firstValid = ti;
+            if (ti.isPlaying() && firstPlaying == null) {
+                firstPlaying = ti;
+            }
+            if (ti.hasSong() && firstWithMeta == null) {
+                firstWithMeta = ti;
+            }
+        }
+        if (firstPlaying != null) return firstPlaying;
+        if (firstWithMeta != null) return firstWithMeta;
+        return firstValid;
+    }
+
+    public static String getKnownOrResolvedAppName(Context ctx, String pkg) {
+        if (pkg == null) return "";
+        String clean = pkg.trim();
+        String hit = KNOWN_APP_LABELS.get(clean);
+        if (hit == null) hit = KNOWN_APP_LABELS.get(clean.toLowerCase(Locale.ROOT));
+        if (hit != null) return hit;
+        return resolveAppLabel(ctx, clean);
+    }
+
+    public static String summarizeLyricsAppSelection(Context ctx, CustomAiConfig cfg) {
+        if (cfg == null) return "";
+        if (CustomAiConfig.LYRICS_APP_SCOPE_ALL.equals(
+                CustomAiConfig.normalizeLyricsAppScope(cfg.lyricsAppScope))) {
+            return "全部媒体 App 均触发（不限制）";
+        }
+        Set<String> set = cfg.getAllowedLyricsPackageSet();
+        if (set == null || set.isEmpty()) {
+            return "未勾选任何 App（暂不触发歌词）";
+        }
+        List<String> names = new ArrayList<>();
+        for (String pkg : set) {
+            names.add(getKnownOrResolvedAppName(ctx, pkg));
+            if (names.size() >= 3) break;
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("仅已选 ").append(set.size()).append(" 个 App（");
+        for (int i = 0; i < names.size(); i++) {
+            if (i > 0) sb.append("、");
+            sb.append(names.get(i));
+        }
+        if (set.size() > names.size()) {
+            sb.append(" 等");
+        }
+        sb.append("）");
+        return sb.toString();
+    }
+
+    /**
+     * Builds the ordered list of selectable media/music apps for the UI picker by merging:
+     * 1. Currently active Android MediaSession apps (always visible regardless of Android 11+ <queries>),
+     * 2. Visible installed audio / media browser apps from PackageManager,
+     * 3. Built-in mainstream music & video app catalog, and
+     * 4. Any user-added custom package IDs in {@code selectedLower}.
+     */
+    public static List<MediaAppOption> listSelectableMediaApps(Context ctx, final Set<String> selectedLower) {
+        LinkedHashMap<String, MediaAppOption> map = new LinkedHashMap<>();
+
+        for (MediaAppOption cat : CATALOG_MEDIA_APPS) {
+            MediaAppOption copy = new MediaAppOption(cat.packageName, cat.appName, cat.pureMusicApp);
+            copy.installed = isPkgInstalled(ctx, copy.packageName);
+            map.put(copy.packageName, copy);
+        }
+
+        String selfPkg = ctx != null ? safe(ctx.getPackageName()).toLowerCase(Locale.ROOT) : "";
+
+        // 1. Live active MediaSession apps
+        List<MediaController> activeCtrls = getActiveControllers(ctx);
+        if (activeCtrls != null) {
+            for (MediaController mc : activeCtrls) {
+                if (mc == null) continue;
+                String rawPkg = safe(mc.getPackageName());
+                String lowPkg = rawPkg.toLowerCase(Locale.ROOT);
+                if (lowPkg.isEmpty() || lowPkg.equals(selfPkg) || lowPkg.startsWith("com.android.server.telecom")) {
+                    continue;
+                }
+                TrackInfo ti = extractTrackInfo(ctx, mc);
+                MediaAppOption opt = map.get(lowPkg);
+                if (opt == null) {
+                    String label = !ti.appName.isEmpty() ? ti.appName : getKnownOrResolvedAppName(ctx, rawPkg);
+                    opt = new MediaAppOption(lowPkg, label, true);
+                    map.put(lowPkg, opt);
+                }
+                opt.installed = true;
+                opt.activeSession = true;
+                if (ti.isPlaying()) {
+                    opt.playingNow = true;
+                }
+                if (ti.hasSong() && opt.activeSongPreview.isEmpty()) {
+                    opt.activeSongPreview = ti.formatSongDisplay();
+                }
+            }
+        }
+
+        // 2. Discover visible installed MediaBrowserService / CATEGORY_AUDIO apps via PackageManager
+        if (ctx != null) {
+            try {
+                PackageManager pm = ctx.getPackageManager();
+                Intent browseIntent = new Intent("android.media.browse.MediaBrowserService");
+                List<ResolveInfo> mediaSvcs = pm.queryIntentServices(browseIntent, 0);
+                if (mediaSvcs != null) {
+                    for (ResolveInfo ri : mediaSvcs) {
+                        if (ri == null || ri.serviceInfo == null) continue;
+                        String rawPkg = safe(ri.serviceInfo.packageName);
+                        String lowPkg = rawPkg.toLowerCase(Locale.ROOT);
+                        if (lowPkg.isEmpty() || lowPkg.equals(selfPkg) || lowPkg.startsWith("com.android.")) continue;
+                        MediaAppOption opt = map.get(lowPkg);
+                        if (opt == null) {
+                            opt = new MediaAppOption(lowPkg, getKnownOrResolvedAppName(ctx, rawPkg), true);
+                            map.put(lowPkg, opt);
+                        }
+                        opt.installed = true;
+                    }
+                }
+                Intent mainIntent = new Intent(Intent.ACTION_MAIN);
+                mainIntent.addCategory(Intent.CATEGORY_LAUNCHER);
+                List<ResolveInfo> launchers = pm.queryIntentActivities(mainIntent, 0);
+                if (launchers != null) {
+                    for (ResolveInfo ri : launchers) {
+                        if (ri == null || ri.activityInfo == null || ri.activityInfo.applicationInfo == null) continue;
+                        ApplicationInfo ai = ri.activityInfo.applicationInfo;
+                        String rawPkg = safe(ai.packageName);
+                        String lowPkg = rawPkg.toLowerCase(Locale.ROOT);
+                        if (lowPkg.isEmpty() || lowPkg.equals(selfPkg)) continue;
+                        MediaAppOption existing = map.get(lowPkg);
+                        if (existing != null) {
+                            existing.installed = true;
+                        } else if (ai.category == ApplicationInfo.CATEGORY_AUDIO
+                                || lowPkg.contains("music") || lowPkg.contains("player") || lowPkg.contains("audio")) {
+                            CharSequence cs = pm.getApplicationLabel(ai);
+                            String label = (cs != null && cs.length() > 0) ? cs.toString() : rawPkg;
+                            MediaAppOption disc = new MediaAppOption(lowPkg, label, true);
+                            disc.installed = true;
+                            map.put(lowPkg, disc);
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {}
+        }
+
+        // 3. Ensure any custom user-configured packages appear in the list
+        if (selectedLower != null) {
+            for (String selPkg : selectedLower) {
+                if (selPkg == null || selPkg.isEmpty()) continue;
+                if (!map.containsKey(selPkg)) {
+                    MediaAppOption custom = new MediaAppOption(
+                            selPkg, getKnownOrResolvedAppName(ctx, selPkg), true);
+                    custom.installed = isPkgInstalled(ctx, selPkg);
+                    map.put(selPkg, custom);
+                }
+            }
+        }
+
+        List<MediaAppOption> list = new ArrayList<>(map.values());
+        Collections.sort(list, new Comparator<MediaAppOption>() {
+            @Override
+            public int compare(MediaAppOption a, MediaAppOption b) {
+                int pa = rankOption(a, selectedLower);
+                int pb = rankOption(b, selectedLower);
+                return Integer.compare(pa, pb);
+            }
+        });
+        return list;
+    }
+
+    private static int rankOption(MediaAppOption o, Set<String> selectedLower) {
+        if (o.playingNow) return 0;
+        if (o.activeSession) return 1;
+        boolean sel = selectedLower != null && selectedLower.contains(o.packageName);
+        if (o.installed && sel) return 2;
+        if (o.installed) return 3;
+        if (sel && o.pureMusicApp) return 4;
+        if (o.pureMusicApp) return 5;
+        return 6;
+    }
+
+    private static boolean isPkgInstalled(Context ctx, String pkg) {
+        if (ctx == null || pkg == null || pkg.isEmpty()) return false;
+        try {
+            ctx.getPackageManager().getApplicationInfo(pkg, 0);
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
     public static ActionResult execute(Context ctx, int action, long logId) {
@@ -1431,10 +1698,15 @@ public final class SystemMediaBridge {
                 }
             }
         }
-        return findBestController(ctx);
+        return findBestController(ctx, null);
     }
 
     private static MediaController findBestController(Context ctx) {
+        return findBestController(ctx, null);
+    }
+
+    private static MediaController findBestController(Context ctx, Set<String> allowedPackagesLower) {
+        if (allowedPackagesLower != null && allowedPackagesLower.isEmpty()) return null;
         List<MediaController> list = getActiveControllers(ctx);
         if (list == null || list.isEmpty()) return null;
 
@@ -1447,6 +1719,9 @@ public final class SystemMediaBridge {
             if (mc == null) continue;
             String pkg = safe(mc.getPackageName());
             if (pkg.isEmpty() || pkg.equals(selfPkg) || pkg.startsWith("com.android.server.telecom")) {
+                continue;
+            }
+            if (allowedPackagesLower != null && !allowedPackagesLower.contains(pkg.toLowerCase(Locale.ROOT))) {
                 continue;
             }
             if (firstValid == null) firstValid = mc;

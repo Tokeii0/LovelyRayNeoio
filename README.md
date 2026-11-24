@@ -4,7 +4,7 @@
 
 [![Platform](https://img.shields.io/badge/Platform-Android%208.0%2B-3DDC84?logo=android&logoColor=white)](#)
 [![Protocols](https://img.shields.io/badge/OpenAI-%2Fv1%2Fchat%2Fcompletions%20%7C%20%2Fv1%2Fresponses-412991?logo=openai&logoColor=white)](#)
-[![Target](https://img.shields.io/badge/Tested%20Base-RayNeo%20AI%20v1.0.25-00B4D8)](#)
+[![Target](https://img.shields.io/badge/Tested%20Base-RayNeo%20AI%20v1.0.30-00B4D8)](#)
 [![License](https://img.shields.io/badge/License-AGPLv3%20%2B%20Commons%20Clause%20(%E7%A6%81%E6%AD%A2%E6%94%B6%E8%B4%B9%C2%B7%E5%BC%BA%E5%88%B6%E5%BC%80%E6%BA%90)-E63946)](./LICENSE)
 
 ---
@@ -22,6 +22,7 @@
 - 🎙️ **100% 保留原版 ASR 与原版 TTS（不断流）**：继续使用雷鸟原生离线唤醒 + 高精度语音识别 + 官方 TTS 音色播报；内置 C++ 云端工作流干净停流与状态信号隔离机制，彻底根治长回复播报 3~4 个字自动断流的问题。
 - 🎤 **眼镜 HUD 音乐歌词与提词器毫秒级实时联动（支持双语译文 & 日语罗马音，`LyricsTeleprompterBridge`）**：打通系统 `MediaSession` 播放进度插值、网易云音乐 / QQ音乐高精度多轨 `.lrc` 解析引擎与 **雷鸟 io (`SmallCore`)** 蓝牙提词器真实线协议（动态反射解析 `CoreConnect` 通道，无惧 R8 混淆重排）：
   - **支持四档显示模式（双语 / 罗马音 / 三语 / 仅原词）**：内置 **「双语译文」**（默认，外语歌自动对齐中文翻译）、**「原词+罗马音」**（自动拉取网易云汉字注音 `romalrc`，QQ音乐播放日语歌时自动跨平台借用网易云罗马音，纯假名段落内置离线平文式罗马音转写兜底）、**「三语全显」**（原词 + `~ 罗马音` + `· 中文译文` 锚定同屏显示）与 **「仅原词」**；
+  - **支持手动选择触发歌词的 App（白名单防误弹）**：在 `⚡LLM` 面板点击 **「📱 手动选择 App」** 可自由勾选允许触发眼镜歌词的播放器（默认预选网易云音乐、QQ音乐、汽水音乐、Apple Music、Spotify、椒盐音乐、洛雪音乐等纯音乐软件，自动屏蔽刷 B站/抖音/小红书/快手视频时误弹歌词；同时支持一键切换「仅网易云+QQ / 仅当前活跃播放器 / 全部媒体 App」及手动添加小众播放器包名）；
   - **支持语音与面板一键切换**：直接对眼镜说 **`「打开歌词 / 打开双语歌词 / 打开罗马音 / 切换到三语歌词 / 仅显示原词 / 关闭歌词」`**，也可在 `⚡LLM` 面板切换模式或点击 **「📤 剪贴板投送眼镜」**；
   - **原版中日英文歌词精准命中**：专用歌词解析器完整保留 VIP/灰标无版权原曲（歌词接口免费返回），支持日语歌曲 `tns` 译名后缀匹配（如 `クリスマスソング (圣诞颂歌) - back number`）、多歌手分词（`/`、`&`、`、`）与时长对齐，自动剔除未请求的 `Cover/翻唱/伴奏/DJ/Live`；
   - **自动进入实时提词 · 整首零刷屏逐行推进**：每首歌仅在开场通过 `0x02 (countdown=3) -> fileShare -> 0x02 (code=7) -> 550ms 预览就绪 -> 0x03` 自动进入提词（**无需手动触碰镜腿播放键**），随后全程通过轻量 `0x08 ProgressUpdate` 毫秒级推进并自动锚定原词主行（双语/三语绝不跳行切半），整首零重传、零死机；
@@ -44,7 +45,7 @@
   - **真实落库的待办/提醒/日程/闹钟**：`提醒我十分钟后喝水`、`定个五分钟倒计时`、`建个待办明天交报告` 真实触发官方 `create_todo` / `set_reminder` 写入雷鸟 App 待办与眼镜提醒；
   - **硬件播控与随身能力**：调音量、调亮度、查电量、拍照/连拍/录像/录音、拨打/接听电话、高德地图路线导航、拍图识物、同声传译、随身记忆全部原样保留。
 - 📱 **手机端内建暗黑配置面板 & 全链路调用审计**：无需反编译改配置，在雷鸟 App 内点击右上角可拖拽 **`⚡LLM` 悬浮球**（或 **连按 3 次音量+**）即可随时改配置、一键测速、剪贴板导入/导出配置，以及在 **「📜 查看调用历史」** 中核验最近 30 次请求的耗时、流式分片与工具调用明细。
-- 🚀 **1 分钟无感升级新版官方 APK**：全部新增逻辑独立编译为追加 `classes{N+1}.dex`，对原包仅在 5 个桥接类中按语义锚点注入钩子（`MOD-01 ~ MOD-05`），未来官方更新 APK 时一键重打补丁即可直接覆盖安装。
+- 🚀 **1 分钟无感升级新版官方 APK**：全部新增逻辑独立编译为追加 `classes{N+1}.dex`，对原包仅在桥接层按语义锚点注入钩子（`MOD-01 ~ MOD-07`），未来官方更新 APK 时一键重打补丁即可直接覆盖安装。
 
 ---
 
@@ -77,7 +78,7 @@ flowchart TD
 3. **Android SDK**（配置 `ANDROID_HOME` 或 `ANDROID_SDK_ROOT`）：
    - `platforms;android-34`（或更高版本，如 `android-35` / `android-36`）
    - `build-tools;34.0.0`（或更高版本，需包含 `d8`、`zipalign`、`apksigner`）
-4. **官方原版安装包**：自行从雷鸟官方渠道下载 `RayNeo_AI_1.0.25.apk`（兼容 `1.0.20` 及更新版本，**本仓库不包含任何官方 APK 文件**）。
+4. **官方原版安装包**：自行从雷鸟官方渠道下载 `RayNeo_AI_1.0.30.apk`（向下全兼容 `1.0.25` / `1.0.20` 及更新版本，**本仓库不包含任何官方 APK 文件**）。
 
 ---
 
@@ -90,23 +91,23 @@ git clone https://github.com/Tokeii0/LovelyRayNeoio.git
 cd LovelyRayNeoio
 ```
 
-将下载好的雷鸟官方原版 APK（例如 `RayNeo_AI_1.0.25.apk`）放到项目根目录或任意位置。
+将下载好的雷鸟官方原版 APK（例如 `RayNeo_AI_1.0.30.apk`）放到项目根目录或任意位置。
 
 ### 第二步：一键生成自定义 AI 版 APK
 
 - **方式 A（Windows 拖拽一键构建）**：  
-  直接鼠标按住 `RayNeo_AI_1.0.25.apk`，拖放到根目录的 **`upgrade_apk.bat`** 图标上松开即可。
+  直接鼠标按住 `RayNeo_AI_1.0.30.apk`，拖放到根目录的 **`upgrade_apk.bat`** 图标上松开即可。
 
 - **方式 B（跨平台命令行构建）**：
   ```bash
-  python custom_ai_mod/patch_apk.py RayNeo_AI_1.0.25.apk
+  python custom_ai_mod/patch_apk.py RayNeo_AI_1.0.30.apk
   ```
   构建脚本会自动完成：
-  1. 编译 `com.rayneo.customai.*` 源码为独立追加 DEX（`CoreConnect` 蓝牙通道采用动态特征反射，无惧 R8 混淆重排）；
-  2. 自动定位目标 DEX（含动态扫描定位 `MOD-05` 蓝牙桥接类）并注入 `MOD-01 ~ MOD-05` 钩子；
+  1. 编译 `com.rayneo.customai.*` 源码为独立追加 DEX（`CoreConnect` 蓝牙通道与 `CaptionHub` 字幕引擎均采用动态特征反射，无惧 R8 混淆重排）；
+  2. 自动定位目标 DEX（含动态扫描定位 `MOD-05` 蓝牙桥接类与 `MOD-07` 实时字幕控制器）并注入 `MOD-01 ~ MOD-07` 钩子；
   3. 运行 `d8` 跨 DEX 联合字节码校验 + **全量 APK 跨 DEX 符号链接核验（确保 0 缺失类/字段/方法）**；
   4. 执行 Android 15+ 要求的 `zipalign -P 16`（16KB 页对齐）；
-  5. 若本地不存在 `custom_ai_mod/keys/rayneo_custom_ai.jks`，**首次运行会自动调用 `keytool` 生成你本地专属的签名密钥库** 并完成 V1+V2+V3 签名校验，最终在同目录输出 `RayNeo_AI_1.0.25_CustomAI.apk`。
+  5. 若本地不存在 `custom_ai_mod/keys/rayneo_custom_ai.jks`，**首次运行会自动调用 `keytool` 生成你本地专属的签名密钥库** 并完成 V1+V2+V3 签名校验，最终在同目录输出 `RayNeo_AI_1.0.30_CustomAI.apk`。
 
 > ⚠️ **请妥善保留生成的 `custom_ai_mod/keys/rayneo_custom_ai.jks`！**  
 > 只要后续升级继续使用同一个 `.jks` 签名，即可永远使用「覆盖安装」更新，无需卸载重配。
@@ -114,10 +115,10 @@ cd LovelyRayNeoio
 ### 第三步：安装到手机（首次安装 vs 后续更新）
 
 #### 1. 首次安装（从官方原版切换到 LovelyRayNeoio）
-由于自定义签名与雷鸟官方出厂签名不同，**仅第一次切换时**需要先卸载手机上的官方原版 App，然后安装构建出的 `RayNeo_AI_1.0.25_CustomAI.apk`：
+由于自定义签名与雷鸟官方出厂签名不同，**仅第一次切换时**需要先卸载手机上的官方原版 App，然后安装构建出的 `RayNeo_AI_1.0.30_CustomAI.apk`：
 
 ```bash
-adb install RayNeo_AI_1.0.25_CustomAI.apk
+adb install RayNeo_AI_1.0.30_CustomAI.apk
 ```
 
 安装后打开雷鸟 App：
@@ -128,7 +129,7 @@ adb install RayNeo_AI_1.0.25_CustomAI.apk
 之后每次修改代码或跟进雷鸟官方新版 APK 重新打包后，**严禁卸载旧包**，直接执行覆盖安装即可：
 
 ```bash
-adb install -r RayNeo_AI_1.0.25_CustomAI.apk
+adb install -r RayNeo_AI_1.0.30_CustomAI.apk
 ```
 （或将 APK 发到手机直接点击「覆盖更新」），**登录状态、雷鸟 io 蓝牙配对、自定义 API Key 与历史记录将 100% 原样保留！**
 
@@ -217,7 +218,7 @@ LovelyRayNeoio/
 └── custom_ai_mod/
     ├── patch_apk.py                    # 跨平台自动化解包、编译、Smali 注入、D8 校验与重签名主脚本
     ├── annotations/
-    │   └── diffs/                      # 自动生成的 MOD-01 ~ MOD-05 Unified Diff 审计补丁记录
+    │   └── diffs/                      # 自动生成的 MOD-01 ~ MOD-07 Unified Diff 审计补丁记录
     ├── keys/                           # 本地签名证书目录（首次构建自动生成，已加入 .gitignore）
     ├── tools/lib/                      # 内置 baksmali / smali 3.0.9 依赖库
     ├── stubs/                          # airuntime 与 CoreConnect 编译期轻量接口桩（不打包进最终 DEX）

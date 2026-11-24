@@ -6,13 +6,13 @@
      invoke-super {p0}, Landroid/app/Application;->onCreate()V
  
 +    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-01 | Init CustomAI on App Start] ====================
-+    const-string v0, "com.rayneo.rayneo_venus_sdk_plugin.o4"
++    const-string v0, "com.rayneo.rayneo_venus_sdk_plugin.r4"
 +    invoke-static {v0}, Lcom/rayneo/customai/LyricsTeleprompterBridge;->registerBridgeClassName(Ljava/lang/String;)V
 +    invoke-static/range {p0 .. p0}, Lcom/rayneo/customai/CustomAiHooks;->onAppCreate(Landroid/app/Application;)V
 +    # ==================== [RAYNEO_CUSTOM_AI_MOD END : MOD-01] ====================
 +
 +
-     sget-object v0, Lvm0/h;->a:Lvm0/h;
+     sget-object v0, Lym0/g;->a:Lym0/g;
  
      invoke-virtual {v0}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
  

@@ -1,8 +1,8 @@
---- orig/o4.smali
-+++ patched/o4.smali
+--- orig/r4.smali
++++ patched/r4.smali
 @@ -2670,8 +2670,13 @@
  
- .method public static l(Lcom/rayneo/rayneo_venus_sdk_plugin/o4;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;[BLjava/lang/String;I)V
+ .method public static l(Lcom/rayneo/rayneo_venus_sdk_plugin/r4;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;[BLjava/lang/String;I)V
      .registers 14
  
 +    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-05B | Observe RayneoNet low-level outbound/inbound frames & errors] ====================
@@ -14,10 +14,10 @@
  
      and-int/2addr p7, v0
  
-@@ -4172,8 +4177,17 @@
+@@ -4098,8 +4103,17 @@
  .end method
  
- .method public final F(Ljava/lang/String;Ljava/util/Map;)V
+ .method public final E(Ljava/lang/String;Ljava/util/Map;)V
      .registers 20
 +
 +    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-05 | Observe & intercept RayneoNet BLE events for Lyrics <-> Teleprompter real-time sync] ====================

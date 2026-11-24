@@ -1054,6 +1054,11 @@ def save_annotations(mod_id: str, short_name: str, orig_path: Path, patched_text
     for d in [orig_dir, patched_dir, diff_dir]:
         d.mkdir(parents=True, exist_ok=True)
 
+    # Remove stale diff files for this MOD-XX when R8 class suffix changes across versions (e.g. o4 -> r4, c0 -> b0)
+    for old_diff in diff_dir.glob(f"{mod_id}_*.diff"):
+        if old_diff.name != f"{mod_id}_{short_name}.diff":
+            old_diff.unlink()
+
     orig_text = orig_path.read_text(encoding="utf-8")
     (orig_dir / f"{short_name}.orig.smali").write_text(orig_text, encoding="utf-8")
     (patched_dir / f"{short_name}.patched.smali").write_text(patched_text, encoding="utf-8")

@@ -4,7 +4,10 @@ import android.content.Context;
 import android.content.SharedPreferences;
 
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * SharedPreferences-backed configuration for Custom LLM API integration.
@@ -14,11 +17,40 @@ public final class CustomAiConfig {
     public static final String PREF_NAME = "rayneo_custom_ai_prefs";
     public static final String KEY_SYNC_LYRICS_TELEPROMPTER = "sync_lyrics_teleprompter";
     public static final String KEY_LYRICS_DISPLAY_MODE = "lyrics_display_mode";
+    public static final String KEY_LYRICS_APP_SCOPE = "lyrics_app_scope";
+    public static final String KEY_LYRICS_ALLOWED_PACKAGES = "lyrics_allowed_packages";
 
     public static final String LYRICS_MODE_ORIGINAL = "original";
     public static final String LYRICS_MODE_BILINGUAL = "bilingual";
     public static final String LYRICS_MODE_ROMAJI = "romaji";
     public static final String LYRICS_MODE_TRILINGUAL = "trilingual";
+
+    public static final String LYRICS_APP_SCOPE_SELECTED = "selected";
+    public static final String LYRICS_APP_SCOPE_ALL = "all";
+
+    /**
+     * Default pre-selected music apps (excludes video/short-video/podcast apps like Bilibili/Douyin/Ximalaya
+     * unless manually checked by the user).
+     */
+    public static final String DEFAULT_LYRICS_ALLOWED_PACKAGES =
+            "com.netease.cloudmusic,"
+            + "com.tencent.qqmusic,"
+            + "com.luna.music,"
+            + "com.kugou.android,"
+            + "cn.kuwo.player,"
+            + "com.apple.android.music,"
+            + "com.spotify.music,"
+            + "com.google.android.apps.youtube.music,"
+            + "cmccwm.mobilemusic,"
+            + "cn.wenyu.bodian,"
+            + "com.salt.music,"
+            + "cn.toside.music.mobile,"
+            + "io.github.echomusic,"
+            + "fun.upup.musicfree,"
+            + "com.miui.player,"
+            + "com.huawei.music,"
+            + "com.heytap.music,"
+            + "com.android.bbkmusic";
 
     public static final String SUBTEXT_SCOPE_BOTH = "both";
     public static final String SUBTEXT_SCOPE_PROACTIVE = "proactive";
@@ -48,6 +80,8 @@ public final class CustomAiConfig {
     public boolean passThroughOfficialSkills = true;
     public boolean syncLyricsToTeleprompter = false;
     public String lyricsDisplayMode = LYRICS_MODE_BILINGUAL;
+    public String lyricsAppScope = LYRICS_APP_SCOPE_SELECTED;
+    public String lyricsAllowedPackages = DEFAULT_LYRICS_ALLOWED_PACKAGES;
     public int skillRouteTimeoutMs = 3500;
 
     public boolean enableMcpAndSkills = true;
@@ -90,6 +124,10 @@ public final class CustomAiConfig {
         c.passThroughOfficialSkills = sp.getBoolean("passThroughOfficialSkills", true);
         c.syncLyricsToTeleprompter = sp.getBoolean(KEY_SYNC_LYRICS_TELEPROMPTER, false);
         c.lyricsDisplayMode = normalizeLyricsMode(sp.getString(KEY_LYRICS_DISPLAY_MODE, LYRICS_MODE_BILINGUAL));
+        c.lyricsAppScope = normalizeLyricsAppScope(sp.getString(KEY_LYRICS_APP_SCOPE, LYRICS_APP_SCOPE_SELECTED));
+        c.lyricsAllowedPackages = sp.contains(KEY_LYRICS_ALLOWED_PACKAGES)
+                ? normalizePackageCsv(sp.getString(KEY_LYRICS_ALLOWED_PACKAGES, ""))
+                : DEFAULT_LYRICS_ALLOWED_PACKAGES;
         c.enableMcpAndSkills = sp.getBoolean("enableMcpAndSkills", true);
         c.enableBuiltinSkills = sp.getBoolean("enableBuiltinSkills", true);
         c.mcpServersJson = sp.getString("mcpServersJson", "[]");
@@ -138,6 +176,8 @@ public final class CustomAiConfig {
                 .putBoolean("passThroughOfficialSkills", passThroughOfficialSkills)
                 .putBoolean(KEY_SYNC_LYRICS_TELEPROMPTER, syncLyricsToTeleprompter)
                 .putString(KEY_LYRICS_DISPLAY_MODE, normalizeLyricsMode(lyricsDisplayMode))
+                .putString(KEY_LYRICS_APP_SCOPE, normalizeLyricsAppScope(lyricsAppScope))
+                .putString(KEY_LYRICS_ALLOWED_PACKAGES, normalizePackageCsv(lyricsAllowedPackages))
                 .putBoolean("enableMcpAndSkills", enableMcpAndSkills)
                 .putBoolean("enableBuiltinSkills", enableBuiltinSkills)
                 .putString("mcpServersJson", safe(mcpServersJson, "[]"))
@@ -251,6 +291,8 @@ public final class CustomAiConfig {
         m.put("passThroughOfficialSkills", passThroughOfficialSkills);
         m.put(KEY_SYNC_LYRICS_TELEPROMPTER, syncLyricsToTeleprompter);
         m.put(KEY_LYRICS_DISPLAY_MODE, normalizeLyricsMode(lyricsDisplayMode));
+        m.put(KEY_LYRICS_APP_SCOPE, normalizeLyricsAppScope(lyricsAppScope));
+        m.put(KEY_LYRICS_ALLOWED_PACKAGES, normalizePackageCsv(lyricsAllowedPackages));
         m.put("enableMcpAndSkills", enableMcpAndSkills);
         m.put("enableBuiltinSkills", enableBuiltinSkills);
         m.put("mcpServersJson", safe(mcpServersJson, "[]"));
@@ -293,6 +335,14 @@ public final class CustomAiConfig {
                 readBool(m, "syncLyricsToTeleprompter", c.syncLyricsToTeleprompter));
         c.lyricsDisplayMode = normalizeLyricsMode(readStr(m, KEY_LYRICS_DISPLAY_MODE,
                 readStr(m, "lyricsDisplayMode", c.lyricsDisplayMode)));
+        c.lyricsAppScope = normalizeLyricsAppScope(readStr(m, KEY_LYRICS_APP_SCOPE,
+                readStr(m, "lyricsAppScope", c.lyricsAppScope)));
+        if (m.containsKey(KEY_LYRICS_ALLOWED_PACKAGES) || m.containsKey("lyricsAllowedPackages")) {
+            String rawPkgs = m.containsKey(KEY_LYRICS_ALLOWED_PACKAGES)
+                    ? readStr(m, KEY_LYRICS_ALLOWED_PACKAGES, "")
+                    : readStr(m, "lyricsAllowedPackages", "");
+            c.lyricsAllowedPackages = normalizePackageCsv(rawPkgs);
+        }
         c.enableMcpAndSkills = readBool(m, "enableMcpAndSkills", c.enableMcpAndSkills);
         c.enableBuiltinSkills = readBool(m, "enableBuiltinSkills", c.enableBuiltinSkills);
         c.mcpServersJson = readStr(m, "mcpServersJson", c.mcpServersJson);
@@ -318,6 +368,57 @@ public final class CustomAiConfig {
         c.timeoutSeconds = readInt(m, "timeoutSeconds", c.timeoutSeconds);
         c.customHeadersJson = readStr(m, "customHeadersJson", c.customHeadersJson);
         return c;
+    }
+
+    public Set<String> getAllowedLyricsPackageSet() {
+        if (LYRICS_APP_SCOPE_ALL.equals(normalizeLyricsAppScope(lyricsAppScope))) {
+            return null;
+        }
+        return parsePackageCsvToSet(lyricsAllowedPackages);
+    }
+
+    public boolean isPackageAllowedForLyrics(String packageName) {
+        if (LYRICS_APP_SCOPE_ALL.equals(normalizeLyricsAppScope(lyricsAppScope))) {
+            return true;
+        }
+        if (packageName == null) return false;
+        String norm = packageName.trim().toLowerCase(Locale.ROOT);
+        if (norm.isEmpty()) return false;
+        return parsePackageCsvToSet(lyricsAllowedPackages).contains(norm);
+    }
+
+    public static String normalizeLyricsAppScope(String raw) {
+        if (raw == null) return LYRICS_APP_SCOPE_SELECTED;
+        String s = raw.trim().toLowerCase(Locale.ROOT);
+        if (LYRICS_APP_SCOPE_ALL.equals(s)) return LYRICS_APP_SCOPE_ALL;
+        return LYRICS_APP_SCOPE_SELECTED;
+    }
+
+    public static Set<String> parsePackageCsvToSet(String raw) {
+        LinkedHashSet<String> set = new LinkedHashSet<>();
+        if (raw == null || raw.trim().isEmpty()) {
+            return set;
+        }
+        String[] parts = raw.split("[,;\\s\\n\\r]+");
+        for (String p : parts) {
+            if (p == null) continue;
+            String clean = p.trim().toLowerCase(Locale.ROOT);
+            if (!clean.isEmpty() && clean.contains(".")) {
+                set.add(clean);
+            }
+        }
+        return set;
+    }
+
+    public static String normalizePackageCsv(String raw) {
+        Set<String> set = parsePackageCsvToSet(raw);
+        if (set.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        for (String p : set) {
+            if (sb.length() > 0) sb.append(',');
+            sb.append(p);
+        }
+        return sb.toString();
     }
 
     public static String normalizeLyricsMode(String raw) {

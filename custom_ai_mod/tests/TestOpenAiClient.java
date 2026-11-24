@@ -41,6 +41,7 @@ public final class TestOpenAiClient {
         testMemory();
         testCallLogLifecycle();
         testSkillIntentRouting();
+        testLyricsAppAllowlistAndFiltering();
 
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         int port = server.getAddress().getPort();
@@ -1297,6 +1298,28 @@ public final class TestOpenAiClient {
         }
     }
 
+    // ===== Mock Caption Hub v1.0.30+ (matching jm0/b0 -> S:am0/b -> c:TmkTranslateDeliveryMode) =====
+    public static final class MockHolderAm0B {
+        public final String a = "online";
+        public final MockCaptionModeEnum c;
+
+        public MockHolderAm0B(MockCaptionModeEnum mode) {
+            this.c = mode;
+        }
+    }
+
+    public static final class MockCaptionHubB0V1030 {
+        public volatile MockHolderAm0B S = new MockHolderAm0B(MockCaptionModeEnum.TRANSCRIPTION_ONLY_MODE);
+        public final List<String> forwardedPayloads = java.util.Collections.synchronizedList(new ArrayList<String>());
+
+        public static void a(MockCaptionHubB0V1030 self, String jsonString) {
+            String out = CustomAiHooks.onCaptionForwardPayload(self, jsonString);
+            if (out != null) {
+                self.forwardedPayloads.add(out);
+            }
+        }
+    }
+
     private static void testSubtextGalgameEngine(HttpServer server, final String mockHost) throws Exception {
         SubtextGalgameEngine.clearStateForTest();
         try {
@@ -1520,10 +1543,98 @@ public final class TestOpenAiClient {
                 Thread.sleep(50L);
             }
             assertEq("服务员麻烦加点水", JsonMini.getString(sealedPass, "text"), "[PASS] leaves mundane text completely clean");
+
+            // 6e. RayNeo AI v1.0.30+ 1-level wrapper holder (jm0/b0.S -> am0/b.c -> isTranscription) + MEETING_ASSISTANT + v1.0.30 skills
+            MockCaptionHubB0V1030 hub1030 = new MockCaptionHubB0V1030();
+            SubtextGalgameEngine.CaptionHubHandles h1030 =
+                    SubtextGalgameEngine.resolveCaptionHubHandles(MockCaptionHubB0V1030.class);
+            assertEq(true, h1030 != null && h1030.isTranscriptionOnlyMode(hub1030),
+                    "v1.0.30 nested holder S->c->isTranscription==true");
+            hub1030.S = new MockHolderAm0B(MockCaptionModeEnum.BILINGUAL_MODE);
+            assertEq(false, h1030.isTranscriptionOnlyMode(hub1030),
+                    "v1.0.30 nested holder S->c->isTranscription==false");
+
+            RayNeoASRConfig meetingCfg = new RayNeoASRConfig();
+            meetingCfg.setBizType("MEETING_ASSISTANT");
+            assertEq(true, SubtextGalgameEngine.isProactiveAiTask("any_renamed_task", meetingCfg),
+                    "v1.0.30 MEETING_ASSISTANT bizType recognized");
+            assertEq("视觉/翻译/记忆", CustomAiHooks.classifySkillOrRealtimeIntent("打开实时回溯"),
+                    "v1.0.30 Live Rewind passes to official skill");
+            assertEq("待办/提醒/日程", CustomAiHooks.classifySkillOrRealtimeIntent("把下午开会的任务标为完成"),
+                    "v1.0.30 complete task passes to official skill");
+            assertEq("系统/硬件控制", CustomAiHooks.classifySkillOrRealtimeIntent("打开电子萌宠"),
+                    "v1.0.30 lockscreen pet passes to official skill");
         } finally {
             SubtextGalgameEngine.setTestConfigOverride(null);
             SubtextGalgameEngine.clearStateForTest();
         }
+    }
+
+    private static void testLyricsAppAllowlistAndFiltering() {
+        CustomAiConfig cfg = new CustomAiConfig();
+        assertEq(CustomAiConfig.LYRICS_APP_SCOPE_SELECTED, cfg.lyricsAppScope, "default scope is selected whitelist");
+        assertEq(true, cfg.isPackageAllowedForLyrics("com.netease.cloudmusic"), "NetEase allowed by default");
+        assertEq(true, cfg.isPackageAllowedForLyrics("com.tencent.qqmusic"), "QQMusic allowed by default");
+        assertEq(true, cfg.isPackageAllowedForLyrics("com.luna.music"), "Soda Music allowed by default");
+        assertEq(false, cfg.isPackageAllowedForLyrics("tv.danmaku.bili"), "Bilibili excluded by default");
+        assertEq(false, cfg.isPackageAllowedForLyrics("com.ss.android.ugc.aweme"), "Douyin excluded by default");
+
+        // JSON serialization & deserialization roundtrip
+        cfg.lyricsAppScope = CustomAiConfig.LYRICS_APP_SCOPE_SELECTED;
+        cfg.lyricsAllowedPackages = " com.netease.cloudmusic , org.akanework.gramophone ; com.netease.cloudmusic ";
+        CustomAiConfig restored = CustomAiConfig.fromJsonString(cfg.toJsonString());
+        assertEq(CustomAiConfig.LYRICS_APP_SCOPE_SELECTED, restored.lyricsAppScope, "restored scope");
+        assertEq("com.netease.cloudmusic,org.akanework.gramophone", restored.lyricsAllowedPackages, "normalized deduped CSV");
+        assertEq(true, restored.isPackageAllowedForLyrics("org.akanework.gramophone"), "custom package allowed");
+        assertEq(false, restored.isPackageAllowedForLyrics("com.tencent.qqmusic"), "unchecked QQMusic blocked");
+
+        // Empty whitelist blocks all apps in "selected" mode
+        restored.lyricsAllowedPackages = "";
+        assertEq(0, restored.getAllowedLyricsPackageSet().size(), "empty CSV -> empty set");
+        assertEq(false, restored.isPackageAllowedForLyrics("com.netease.cloudmusic"), "empty set blocks NetEase");
+
+        // "all" scope allows any media app
+        restored.lyricsAppScope = CustomAiConfig.LYRICS_APP_SCOPE_ALL;
+        assertEq(true, restored.isPackageAllowedForLyrics("tv.danmaku.bili"), "all scope allows Bilibili");
+
+        // Multi-session filtering: Bilibili playing in foreground + NetEase paused/playing in background
+        SystemMediaBridge.TrackInfo bili = new SystemMediaBridge.TrackInfo();
+        bili.packageName = "tv.danmaku.bili";
+        bili.appName = "哔哩哔哩";
+        bili.title = "【4K】年度游戏盘点";
+        bili.artist = "UP主";
+        bili.playbackState = android.media.session.PlaybackState.STATE_PLAYING;
+
+        SystemMediaBridge.TrackInfo netease = new SystemMediaBridge.TrackInfo();
+        netease.packageName = "com.netease.cloudmusic";
+        netease.appName = "网易云音乐";
+        netease.title = "晴天";
+        netease.artist = "周杰伦";
+        netease.playbackState = android.media.session.PlaybackState.STATE_PAUSED;
+
+        List<SystemMediaBridge.TrackInfo> activeSessions = new ArrayList<SystemMediaBridge.TrackInfo>();
+        activeSessions.add(bili);
+        activeSessions.add(netease);
+
+        CustomAiConfig defaultWhitelist = new CustomAiConfig();
+        // When ONLY Bilibili is active, filtered lookup returns null so glasses teleprompter won't pop up
+        List<SystemMediaBridge.TrackInfo> onlyBili = new ArrayList<SystemMediaBridge.TrackInfo>();
+        onlyBili.add(bili);
+        assertEq(null,
+                SystemMediaBridge.pickBestTrackFiltered(onlyBili, "com.rayneo.venus.pub", defaultWhitelist.getAllowedLyricsPackageSet()),
+                "only Bilibili playing -> filtered track is null");
+
+        // When Bilibili is playing AND NetEase is in session list, filtered lookup skips Bilibili and picks NetEase
+        SystemMediaBridge.TrackInfo picked = SystemMediaBridge.pickBestTrackFiltered(
+                activeSessions, "com.rayneo.venus.pub", defaultWhitelist.getAllowedLyricsPackageSet());
+        assertEq("com.netease.cloudmusic", picked != null ? picked.packageName : null,
+                "filtered lookup skips Bilibili and selects NetEase");
+
+        // Unrestricted (null allowlist) picks playing Bilibili as usual for voice media controls (暂停/下一首)
+        SystemMediaBridge.TrackInfo unrestricted = SystemMediaBridge.pickBestTrackFiltered(
+                activeSessions, "com.rayneo.venus.pub", null);
+        assertEq("tv.danmaku.bili", unrestricted != null ? unrestricted.packageName : null,
+                "unrestricted lookup keeps Bilibili for system media control");
     }
 
     private static void writeSse(OutputStream os, String chunk) throws IOException {

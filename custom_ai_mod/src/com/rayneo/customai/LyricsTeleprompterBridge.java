@@ -479,7 +479,7 @@ public final class LyricsTeleprompterBridge {
             public void run() {
                 String curSongKey = "";
                 if (appCtx != null) {
-                    SystemMediaBridge.TrackInfo t = SystemMediaBridge.getCurrentTrack(appCtx);
+                    SystemMediaBridge.TrackInfo t = getCurrentLyricsTrack(appCtx, null);
                     if (t != null && t.hasSong()) {
                         curSongKey = normalizeTrackKey(t.title, t.artist);
                     }
@@ -503,6 +503,15 @@ public final class LyricsTeleprompterBridge {
             }
         });
         return "已将《" + noteMs.title + "》（共 " + noteMs.lines.length + " 行）加入眼镜提词器推送队列";
+    }
+
+    /**
+     * Resolves the active track eligible to trigger lyrics sync according to the user's selected app list.
+     */
+    public static SystemMediaBridge.TrackInfo getCurrentLyricsTrack(Context ctx, CustomAiConfig cfgOrNull) {
+        if (ctx == null) return null;
+        CustomAiConfig cfg = cfgOrNull != null ? cfgOrNull : CustomAiConfig.load(ctx);
+        return SystemMediaBridge.getCurrentTrackFiltered(ctx, cfg.getAllowedLyricsPackageSet());
     }
 
     public static void notifyMediaChanged() {
@@ -601,7 +610,7 @@ public final class LyricsTeleprompterBridge {
             cfg.save(ctx);
             syncNow(ctx, null);
             String modeLabel = formatDisplayModeLabel(cfg.lyricsDisplayMode);
-            SystemMediaBridge.TrackInfo ti = SystemMediaBridge.getCurrentTrack(ctx);
+            SystemMediaBridge.TrackInfo ti = getCurrentLyricsTrack(ctx, cfg);
             if (logId > 0L) {
                 CustomAiCallLog.addEvent(logId, "LYRICS_SYNC_ENABLED(mode=" + cfg.lyricsDisplayMode
                         + ", track=" + (ti != null ? ti.formatSongDisplay() : "none") + ")");
@@ -609,7 +618,13 @@ public final class LyricsTeleprompterBridge {
             if (ti != null && ti.hasSong()) {
                 return "已开启眼镜歌词联动（" + modeLabel + "），正在同步：" + ti.formatSongDisplay();
             }
-            return "已开启眼镜歌词提词器联动（" + modeLabel + "），播放音乐时将自动同步滚动歌词";
+            SystemMediaBridge.TrackInfo rawAny = SystemMediaBridge.getCurrentTrack(ctx);
+            if (rawAny != null && rawAny.hasSong()) {
+                String appLabel = !rawAny.appName.isEmpty() ? rawAny.appName : rawAny.packageName;
+                return "已开启眼镜歌词联动（" + modeLabel + "）。当前正在播放的「" + appLabel
+                        + "」未在触发应用列表中，如需联动可在面板「选择触发歌词的 App」中勾选";
+            }
+            return "已开启眼镜歌词提词器联动（" + modeLabel + "），播放指定音乐 App 时将自动同步滚动歌词";
         }
         return "";
     }
@@ -816,7 +831,7 @@ public final class LyricsTeleprompterBridge {
                 return;
             }
 
-            SystemMediaBridge.TrackInfo track = SystemMediaBridge.getCurrentTrack(app);
+            SystemMediaBridge.TrackInfo track = getCurrentLyricsTrack(app, cfg);
             String liveTrackKey = (track != null && track.hasSong())
                     ? normalizeTrackKey(track.title, track.artist) : "";
 
@@ -900,9 +915,15 @@ public final class LyricsTeleprompterBridge {
 
             if (track == null || !track.hasSong()) {
                 if (sessionState != SESSION_IDLE) {
-                    stopSessionOnGlasses("无正在播放的歌曲");
+                    stopSessionOnGlasses("无正在播放的白名单歌曲");
                 }
-                lastStatusSummary = "等待音乐播放…";
+                SystemMediaBridge.TrackInfo rawAny = SystemMediaBridge.getCurrentTrack(app);
+                if (rawAny != null && rawAny.hasSong() && rawAny.isPlaying()) {
+                    String appLabel = !rawAny.appName.isEmpty() ? rawAny.appName : rawAny.packageName;
+                    lastStatusSummary = "已跳过非勾选应用：" + appLabel;
+                } else {
+                    lastStatusSummary = "等待选定音乐 App 播放…";
+                }
                 scheduleTick(TICK_IDLE_MS);
                 return;
             }
@@ -1204,7 +1225,7 @@ public final class LyricsTeleprompterBridge {
         int lineIdx = ms.isCustomNote ? 0 : Math.max(0, Math.min(lastSentLineIdx, ms.lineByteOffsets.length - 1));
         Application app = appContext;
         if (app != null && !ms.isCustomNote) {
-            SystemMediaBridge.TrackInfo liveTrack = SystemMediaBridge.getCurrentTrack(app);
+            SystemMediaBridge.TrackInfo liveTrack = getCurrentLyricsTrack(app, null);
             if (liveTrack != null && liveTrack.hasSong()
                     && normalizeTrackKey(liveTrack.title, liveTrack.artist).equals(ms.trackKey)) {
                 long targetMs = liveTrack.getInterpolatedPositionMs()
@@ -1277,7 +1298,7 @@ public final class LyricsTeleprompterBridge {
                                     if (curDev.isEmpty()) return;
                                     LyricsManuscript snapMs = activeManuscript;
                                     if (snapMs == null && appContext != null) {
-                                        SystemMediaBridge.TrackInfo t = SystemMediaBridge.getCurrentTrack(appContext);
+                                        SystemMediaBridge.TrackInfo t = getCurrentLyricsTrack(appContext, null);
                                         if (t != null && t.hasSong()) {
                                             snapMs = getOrFetchManuscript(t);
                                         }
@@ -1357,7 +1378,7 @@ public final class LyricsTeleprompterBridge {
                     }
                 } else if (action == 1 && isLyricsDid(did) && !deviceId.isEmpty()) {
                     if (activeManuscript == null && appContext != null) {
-                        SystemMediaBridge.TrackInfo t = SystemMediaBridge.getCurrentTrack(appContext);
+                        SystemMediaBridge.TrackInfo t = getCurrentLyricsTrack(appContext, null);
                         if (t != null && t.hasSong()) {
                             activeManuscript = getOrFetchManuscript(t);
                         } else {

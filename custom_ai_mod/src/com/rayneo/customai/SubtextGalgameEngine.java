@@ -311,10 +311,22 @@ public final class SubtextGalgameEngine {
 
     public static boolean isProactiveAiTask(String taskName, RayNeoASRConfig config) {
         if (PROACTIVE_TASK_NAME.equals(safe(taskName))) return true;
-        if (config != null && PROACTIVE_BIZ_TYPE.equalsIgnoreCase(safe(config.getBizType()))) {
-            return true;
+        if (config != null) {
+            String biz = safe(config.getBizType());
+            if (PROACTIVE_BIZ_TYPE.equalsIgnoreCase(biz) || "MEETING_ASSISTANT".equalsIgnoreCase(biz)) {
+                return true;
+            }
         }
         return false;
+    }
+
+    private static boolean isOwnedProactiveTask(ASRTask task, String taskName) {
+        if (PROACTIVE_TASK_NAME.equals(safe(taskName))) return true;
+        if (task == null) return false;
+        synchronized (PROACTIVE_LOCK) {
+            ASRTask cur = activeProactiveTaskRef != null ? activeProactiveTaskRef.get() : null;
+            return cur != null && cur == task;
+        }
     }
 
     public static void onAsrTaskInit(
@@ -330,7 +342,7 @@ public final class SubtextGalgameEngine {
     }
 
     public static void onAsrTaskStop(ASRTask task, String taskName) {
-        if (!PROACTIVE_TASK_NAME.equals(safe(taskName))) return;
+        if (!isOwnedProactiveTask(task, taskName)) return;
         synchronized (PROACTIVE_LOCK) {
             ASRTask cur = activeProactiveTaskRef != null ? activeProactiveTaskRef.get() : null;
             if (cur == null || cur == task) {
@@ -352,7 +364,7 @@ public final class SubtextGalgameEngine {
      */
     public static boolean shouldSuppressStockProactiveHint(
             ASRTask task, String taskName, String text, boolean isFinish, String asrTextId) {
-        if (!PROACTIVE_TASK_NAME.equals(safe(taskName))) return false;
+        if (!isOwnedProactiveTask(task, taskName)) return false;
         CustomAiConfig cfg = loadConfig();
         if (cfg.isSubtextEnabledForProactive()) {
             safeLogI("[PROACTIVE-SUPPRESS] Blocked stock hint asrTextId=" + asrTextId);
@@ -363,7 +375,7 @@ public final class SubtextGalgameEngine {
 
     public static void onProactiveAsrResult(
             ASRTask task, String taskName, String rawAsr, boolean finished) {
-        if (!PROACTIVE_TASK_NAME.equals(safe(taskName))) return;
+        if (!isOwnedProactiveTask(task, taskName)) return;
         CustomAiConfig cfg = loadConfig();
         if (!cfg.isSubtextEnabledForProactive()) return;
 
@@ -835,16 +847,19 @@ public final class SubtextGalgameEngine {
     public static final class CaptionHubHandles {
         public final Class<?> hubClass;
         public final Method staticForwardMethod;
-        public final Field modeEnumField;
+        public final Field modeHolderField; // Optional 1-level wrapper holder (e.g. v1.0.30+ jm0.b0.S -> am0.b)
+        public final Field modeEnumField;   // Enum field (e.g. TmkTranslateDeliveryMode) either on hubClass or modeHolderField
         public final Field isTranscriptionField;
 
         private CaptionHubHandles(
                 Class<?> hubClass,
                 Method staticForwardMethod,
+                Field modeHolderField,
                 Field modeEnumField,
                 Field isTranscriptionField) {
             this.hubClass = hubClass;
             this.staticForwardMethod = staticForwardMethod;
+            this.modeHolderField = modeHolderField;
             this.modeEnumField = modeEnumField;
             this.isTranscriptionField = isTranscriptionField;
         }
@@ -854,7 +869,12 @@ public final class SubtextGalgameEngine {
                 return false;
             }
             try {
-                Object modeEnum = modeEnumField.get(c0Instance);
+                Object owner = c0Instance;
+                if (modeHolderField != null) {
+                    owner = modeHolderField.get(c0Instance);
+                    if (owner == null) return false;
+                }
+                Object modeEnum = modeEnumField.get(owner);
                 if (modeEnum != null) {
                     return isTranscriptionField.getBoolean(modeEnum);
                 }
@@ -908,8 +928,11 @@ public final class SubtextGalgameEngine {
             }
             if (forwardMethod == null) return null;
 
+            Field foundHolderField = null;
             Field foundModeField = null;
             Field foundIsTransField = null;
+
+            // Pass 1: Direct enum field on hubCls (RayNeo AI v1.0.25 and earlier)
             for (Field f : hubCls.getDeclaredFields()) {
                 if (Modifier.isStatic(f.getModifiers())) continue;
                 Class<?> ft = f.getType();
@@ -927,8 +950,43 @@ public final class SubtextGalgameEngine {
                 }
             }
 
+            // Pass 2: 1-level config holder field on hubCls (RayNeo AI v1.0.30+ jm0.b0.S -> am0.b.c -> TmkTranslateDeliveryMode)
+            if (foundModeField == null) {
+                for (Field hf : hubCls.getDeclaredFields()) {
+                    if (Modifier.isStatic(hf.getModifiers()) || hf.isSynthetic()) continue;
+                    Class<?> hType = hf.getType();
+                    if (hType.isPrimitive() || hType.isArray() || hType.isEnum() || hType == hubCls) continue;
+                    String hn = hType.getName();
+                    if (hn.startsWith("java.") || hn.startsWith("android.")
+                            || hn.startsWith("kotlinx.") || hn.startsWith("com.google.")) {
+                        continue;
+                    }
+                    try {
+                        for (Field innerF : hType.getDeclaredFields()) {
+                            if (Modifier.isStatic(innerF.getModifiers())) continue;
+                            Class<?> innerType = innerF.getType();
+                            if (innerType.isEnum()) {
+                                try {
+                                    Field isTrans = innerType.getDeclaredField("isTranscription");
+                                    if (isTrans.getType() == boolean.class) {
+                                        hf.setAccessible(true);
+                                        innerF.setAccessible(true);
+                                        isTrans.setAccessible(true);
+                                        foundHolderField = hf;
+                                        foundModeField = innerF;
+                                        foundIsTransField = isTrans;
+                                        break;
+                                    }
+                                } catch (NoSuchFieldException ignored) {}
+                            }
+                        }
+                    } catch (Throwable ignored) {}
+                    if (foundModeField != null) break;
+                }
+            }
+
             CaptionHubHandles resolved = new CaptionHubHandles(
-                    hubCls, forwardMethod, foundModeField, foundIsTransField);
+                    hubCls, forwardMethod, foundHolderField, foundModeField, foundIsTransField);
             cachedCaptionHandles = resolved;
             return resolved;
         } catch (Throwable t) {

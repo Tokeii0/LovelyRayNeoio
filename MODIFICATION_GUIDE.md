@@ -1,8 +1,8 @@
 # 雷鸟 AI (RayNeo AI) 自定义 LLM 接口改造说明与升级指南
 
 > 适用设备：**雷鸟 io** 智能眼镜 + **小米 17 Ultra (`25128PNA1C`)**  
-> 基准官方版本：`com.rayneo.venus.pub` v1.0.25 (`versionCode=100250511`，向下兼容 v1.0.20)  
-> 改造产物：[RayNeo_AI_1.0.25_CustomAI.apk](./RayNeo_AI_1.0.25_CustomAI.apk)
+> 基准官方版本：`com.rayneo.venus.pub` v1.0.30 (`versionCode=100300523`，向下全兼容 v1.0.25 / v1.0.20)  
+> 改造产物：[RayNeo_AI_1.0.30_CustomAI.apk](./RayNeo_AI_1.0.30_CustomAI.apk)
 
 ---
 
@@ -57,9 +57,9 @@ flowchart LR
 | **MOD-03L~P** | `com.rayneo.airuntime.controller.AssistantController` | `nativeOnSpeechStatus` / `VadStatusChange` / `AudioRecordStart` / 重复 `AudioRecordEnd` / `Notify` 过滤，防止眼镜显示 3~4 字后被云端状态关闭或覆盖 | [MOD-03_AssistantController.diff](./custom_ai_mod/annotations/diffs/MOD-03_AssistantController.diff) |
 | **MOD-03Q** | `com.rayneo.airuntime.controller.AssistantController` | `startNextRound()` 扩容 `.registers 1 -> 2`，在 C++ 已停流时自动重新拉起 `startWorkflow()` | [MOD-03_AssistantController.diff](./custom_ai_mod/annotations/diffs/MOD-03_AssistantController.diff) |
 | **MOD-04A~D** | `com.rayneo.airuntime.controller.AskAITask` | `initTask` / `startTask` / `stopTask` / `releaseTask` 接管手机端 Ask AI 对话 | [MOD-04_AskAITask.diff](./custom_ai_mod/annotations/diffs/MOD-04_AskAITask.diff) |
-| **MOD-05 / 05B** | `com.rayneo.rayneo_venus_sdk_plugin.o4` *(构建期自动扫描定位)* | `F(String, Map)` 监听并按需拦截专属歌词槽位 `TELEPROMPTER` / `fileShareSuccess` 事件（避免官方 Flutter 报 `Manuscript missing`），`l(...)` 追踪底层收发帧，配合 `CoreConnectHandles` 动态特征反射（自动适配 `1.0.20` 的 `w/v0/g0/h4/vb.h/wb.q` 与 `1.0.25` 的 `v/u0/f0/i4/lc.h/mc.q` 等 R8 混淆类名偏移）实现 `.lrc` 歌词自动进入实时提词与 `0x08` 毫秒级无刷新同步 | [MOD-05_RayneoNetBridge_o4.diff](./custom_ai_mod/annotations/diffs/MOD-05_RayneoNetBridge_o4.diff) |
-| **MOD-06A~E** | `com.rayneo.airuntime.controller.ASRTask` | 接管「有问必答 (`venus_proactive_ai_asr`)」持续拾音流与 `RayNeoProactiveHint` 下发通道，实现《极乐迪斯科》潜台词解码 + GALGAME 对话选项卡片流式推送（不影响提词器跟随与语音口令 ASRTask） | [MOD-06_ASRTask.diff](./custom_ai_mod/annotations/diffs/MOD-06_ASRTask.diff) |
-| **MOD-07** | `im0.c0` *(构建期特征自动扫描定位)* | 拦截「实时字幕 / 同传翻译」中枢转发入口 `a(c0, json)`，在保留 `guest/host` 说话人区分与段封口（`finished`）状态机不变的前提下，向眼镜 `0x17 CAPTION` 通道与手机字幕流实时注入潜台词与对话选项 | [MOD-07_CaptionHub_c0.diff](./custom_ai_mod/annotations/diffs/MOD-07_CaptionHub_c0.diff) |
+| **MOD-05 / 05B** | `com.rayneo.rayneo_venus_sdk_plugin.r4` *(构建期自动扫描定位)* | `F(String, Map)` 监听并按需拦截专属歌词槽位 `TELEPROMPTER` / `fileShareSuccess` 事件（避免官方 Flutter 报 `Manuscript missing`），追踪底层收发帧，配合 `CoreConnectHandles` 动态特征反射（自动适配 `1.0.20` 的 `o4/w/v0/g0/h4`、`1.0.25` 的 `o4/v/u0/f0/i4` 与 `1.0.30` 的 `r4/w/v0/f0/j4` 等 R8 混淆类名偏移）实现 `.lrc` 歌词自动进入实时提词与 `0x08` 毫秒级无刷新同步 | [MOD-05_RayneoNetBridge_r4.diff](./custom_ai_mod/annotations/diffs/MOD-05_RayneoNetBridge_r4.diff) |
+| **MOD-06A~E** | `com.rayneo.airuntime.controller.ASRTask` | 接管「有问必答 (`venus_proactive_ai_asr` / `MEETING_ASSISTANT`)」持续拾音流与 `RayNeoProactiveHint` 下发通道，实现《极乐迪斯科》潜台词解码 + GALGAME 对话选项卡片流式推送（不影响提词器跟随与语音口令 ASRTask） | [MOD-06_ASRTask.diff](./custom_ai_mod/annotations/diffs/MOD-06_ASRTask.diff) |
+| **MOD-07** | `jm0.b0` *(构建期特征自动扫描定位)* | 拦截「实时字幕 / 同传翻译」中枢转发入口 `a(hub, json)`，自动兼容直连模式枚举（`1.0.25` `im0.c0`）与嵌套配置持有者（`1.0.30+` `jm0.b0.S -> am0.b.c`），向眼镜 `0x17 CAPTION` 通道与手机字幕流实时注入潜台词与对话选项 | [MOD-07_CaptionHub_b0.diff](./custom_ai_mod/annotations/diffs/MOD-07_CaptionHub_b0.diff) |
 
 汇总差异文件：[ALL_MODIFICATIONS.diff](./custom_ai_mod/annotations/diffs/ALL_MODIFICATIONS.diff)
 

@@ -29,7 +29,12 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Theme-independent dark UI settings & call-history dialog built purely with
@@ -534,6 +539,51 @@ public final class CustomAiSettingsDialog {
             }
         });
 
+        addFieldLabel(activity, cardSwitches, "触发歌词的音乐 App（手动勾选白名单，防刷视频误弹歌词）", true);
+        LinearLayout lyricsAppBox = new LinearLayout(activity);
+        lyricsAppBox.setOrientation(LinearLayout.HORIZONTAL);
+        lyricsAppBox.setGravity(Gravity.CENTER_VERTICAL);
+        lyricsAppBox.setPadding(dp(activity, 10), dp(activity, 8), dp(activity, 10), dp(activity, 8));
+        GradientDrawable lyricsAppBg = new GradientDrawable();
+        lyricsAppBg.setColor(COL_BG_INPUT);
+        lyricsAppBg.setCornerRadius(dp(activity, 9));
+        lyricsAppBg.setStroke(dp(activity, 1), COL_BORDER_INPUT);
+        lyricsAppBox.setBackground(lyricsAppBg);
+
+        final TextView tvLyricsAppsSummary = new TextView(activity);
+        tvLyricsAppsSummary.setTextColor(Color.rgb(226, 232, 240));
+        tvLyricsAppsSummary.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
+        tvLyricsAppsSummary.setLineSpacing(dp(activity, 1.5f), 1f);
+        LinearLayout.LayoutParams sumLp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        sumLp.rightMargin = dp(activity, 8);
+        lyricsAppBox.addView(tvLyricsAppsSummary, sumLp);
+
+        Button btnSelectLyricsApps = makePillBtn(
+                activity, "📱 手动选择 App", COL_BLUE, Color.rgb(96, 165, 250), 11.5f);
+        btnSelectLyricsApps.setPadding(dp(activity, 10), dp(activity, 8), dp(activity, 10), dp(activity, 8));
+        lyricsAppBox.addView(btnSelectLyricsApps, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        cardSwitches.addView(lyricsAppBox);
+
+        final Runnable refreshLyricsAppsSummary = new Runnable() {
+            @Override
+            public void run() {
+                tvLyricsAppsSummary.setText("🎯 " + SystemMediaBridge.summarizeLyricsAppSelection(activity, cfg));
+            }
+        };
+        refreshLyricsAppsSummary.run();
+
+        final View.OnClickListener openLyricsAppPicker = new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showLyricsAppSelectorDialog(activity, cfg, refreshLyricsAppsSummary);
+            }
+        };
+        btnSelectLyricsApps.setOnClickListener(openLyricsAppPicker);
+        lyricsAppBox.setClickable(true);
+        lyricsAppBox.setOnClickListener(openLyricsAppPicker);
+
         LinearLayout promBtnRow = new LinearLayout(activity);
         promBtnRow.setOrientation(LinearLayout.HORIZONTAL);
         LinearLayout.LayoutParams promRowLp = new LinearLayout.LayoutParams(
@@ -561,9 +611,22 @@ public final class CustomAiSettingsDialog {
                 CustomAiConfig immediate = CustomAiConfig.load(activity);
                 immediate.syncLyricsToTeleprompter = true;
                 immediate.lyricsDisplayMode = lyricsModeValues[segLyricsMode.getSelectedIndex()];
+                immediate.lyricsAppScope = cfg.lyricsAppScope;
+                immediate.lyricsAllowedPackages = cfg.lyricsAllowedPackages;
                 immediate.save(activity);
-                SystemMediaBridge.TrackInfo cur = SystemMediaBridge.getCurrentTrack(activity);
-                final String songLabel = (cur != null && cur.hasSong()) ? cur.formatSongDisplay() : "等待当前播放器曲目";
+                SystemMediaBridge.TrackInfo cur = LyricsTeleprompterBridge.getCurrentLyricsTrack(activity, immediate);
+                if (cur == null || !cur.hasSong()) {
+                    SystemMediaBridge.TrackInfo rawCur = SystemMediaBridge.getCurrentTrack(activity);
+                    if (rawCur != null && rawCur.hasSong() && !immediate.isPackageAllowedForLyrics(rawCur.packageName)) {
+                        String blockedApp = !rawCur.appName.isEmpty() ? rawCur.appName : rawCur.packageName;
+                        LyricsTeleprompterBridge.onConfigChanged(activity);
+                        Toast.makeText(activity,
+                                "⏸ 当前播放来自「" + blockedApp + "」，未在触发歌词列表中；如需同步请点上方「📱 手动选择 App」勾选",
+                                Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                }
+                final String songLabel = (cur != null && cur.hasSong()) ? cur.formatSongDisplay() : "等待已选音乐 App 播放曲目";
                 LyricsTeleprompterBridge.syncNow(activity, null);
                 Toast.makeText(activity, "🎤 已触发(" + LyricsTeleprompterBridge.formatDisplayModeLabel(immediate.lyricsDisplayMode)
                         + ")同步：" + songLabel, Toast.LENGTH_SHORT).show();
@@ -1186,6 +1249,9 @@ public final class CustomAiSettingsDialog {
                         }
                     }
                     segLyricsMode.setSelectedIndex(impLyrIdx);
+                    cfg.lyricsAppScope = CustomAiConfig.normalizeLyricsAppScope(imported.lyricsAppScope);
+                    cfg.lyricsAllowedPackages = CustomAiConfig.normalizePackageCsv(imported.lyricsAllowedPackages);
+                    refreshLyricsAppsSummary.run();
                     swMcpSkills.setChecked(imported.enableMcpAndSkills, true);
                     swBuiltinSkills.setChecked(imported.enableBuiltinSkills, true);
                     etMcpServers.setText(imported.mcpServersJson);
@@ -1265,6 +1331,387 @@ public final class CustomAiSettingsDialog {
         frame.footer.addView(btnSave, saveLp);
 
         activeDialog = frame.dialog;
+        frame.dialog.show();
+    }
+
+    private static String joinPackageSet(Set<String> pkgs) {
+        if (pkgs == null || pkgs.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        for (String p : pkgs) {
+            if (p == null) continue;
+            String t = p.trim();
+            if (t.isEmpty()) continue;
+            if (sb.length() > 0) sb.append(',');
+            sb.append(t);
+        }
+        return CustomAiConfig.normalizePackageCsv(sb.toString());
+    }
+
+    private static void showLyricsAppSelectorDialog(
+            final Activity activity,
+            final CustomAiConfig parentCfg,
+            final Runnable onSavedCallback
+    ) {
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
+
+        final DialogFrame frame = createBaseDialog(
+                activity,
+                "📱 选择触发歌词的 App",
+                "仅被勾选的播放器放歌时才会向眼镜推送滚动歌词；语音切歌/暂停仍支持全部播放器",
+                0.68f
+        );
+
+        final Set<String> workingSet = new LinkedHashSet<String>(parentCfg.getAllowedLyricsPackageSet());
+        final Map<String, ToggleRow> rowByPkg = new LinkedHashMap<String, ToggleRow>();
+        final Map<String, View> wrapByPkg = new LinkedHashMap<String, View>();
+        final Map<String, String> searchKeyByPkg = new LinkedHashMap<String, String>();
+
+        LinearLayout cardScope = addCardSection(activity, frame.body, "🎯 歌词触发范围");
+        final SegmentSelector segScope = new SegmentSelector(
+                activity,
+                new String[]{"🎯 仅勾选的 App 触发（推荐）", "🌐 全部媒体 App（不限制）"},
+                11.5f
+        );
+        segScope.setSelectedIndex(
+                CustomAiConfig.LYRICS_APP_SCOPE_ALL.equalsIgnoreCase(parentCfg.lyricsAppScope) ? 1 : 0);
+        cardScope.addView(segScope);
+
+        final TextView tvScopeHint = new TextView(activity);
+        tvScopeHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
+        tvScopeHint.setPadding(dp(activity, 9), dp(activity, 7), dp(activity, 9), dp(activity, 7));
+        LinearLayout.LayoutParams shLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        shLp.topMargin = dp(activity, 8);
+        cardScope.addView(tvScopeHint, shLp);
+
+        final Runnable updateScopeHint = new Runnable() {
+            @Override
+            public void run() {
+                if (segScope.getSelectedIndex() == 1) {
+                    setStatusBanner(activity, tvScopeHint,
+                            Color.rgb(30, 58, 138), Color.rgb(59, 130, 246),
+                            "🌐 当前不限制应用：任意发出系统媒体通知的音乐/视频/播客软件都可能触发歌词同步");
+                } else if (workingSet.isEmpty()) {
+                    setStatusBanner(activity, tvScopeHint,
+                            Color.rgb(120, 53, 15), Color.rgb(245, 158, 11),
+                            "⚠️ 当前未勾选任何应用，自动歌词联动不会触发；请在下方勾选至少 1 个音乐软件");
+                } else {
+                    setStatusBanner(activity, tvScopeHint,
+                            Color.rgb(6, 78, 59), COL_EMERALD_BRIGHT,
+                            "✅ 已勾选 " + workingSet.size() + " 个应用 · 刷 B站/抖音/小红书 等未勾选软件不会误弹眼镜歌词");
+                }
+            }
+        };
+        segScope.setOnChangedListener(updateScopeHint);
+
+        LinearLayout cardApps = addCardSection(activity, frame.body, "🎵 手动勾选允许触发歌词的播放器");
+
+        LinearLayout presetRow1 = new LinearLayout(activity);
+        presetRow1.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams pr1Lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        pr1Lp.bottomMargin = dp(activity, 6);
+        cardApps.addView(presetRow1, pr1Lp);
+
+        LinearLayout presetRow2 = new LinearLayout(activity);
+        presetRow2.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams pr2Lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        pr2Lp.bottomMargin = dp(activity, 8);
+        cardApps.addView(presetRow2, pr2Lp);
+
+        final EditText etSearch = makeEdit(
+                activity,
+                "🔍 搜索应用名或包名（如 网易云 / 汽水 / spotify / bili）...",
+                "",
+                InputType.TYPE_CLASS_TEXT,
+                true
+        );
+        LinearLayout.LayoutParams searchLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        searchLp.bottomMargin = dp(activity, 8);
+        cardApps.addView(etSearch, searchLp);
+
+        final LinearLayout appRowsBox = new LinearLayout(activity);
+        appRowsBox.setOrientation(LinearLayout.VERTICAL);
+        cardApps.addView(appRowsBox, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        final Runnable applySearchFilter = new Runnable() {
+            @Override
+            public void run() {
+                String q = etSearch.getText().toString().trim().toLowerCase(Locale.ROOT);
+                for (Map.Entry<String, View> entry : wrapByPkg.entrySet()) {
+                    String key = searchKeyByPkg.get(entry.getKey());
+                    boolean match = q.isEmpty() || (key != null && key.contains(q));
+                    entry.getValue().setVisibility(match ? View.VISIBLE : View.GONE);
+                }
+            }
+        };
+
+        final Runnable rebuildAppRows = new Runnable() {
+            @Override
+            public void run() {
+                appRowsBox.removeAllViews();
+                rowByPkg.clear();
+                wrapByPkg.clear();
+                searchKeyByPkg.clear();
+
+                List<SystemMediaBridge.MediaAppOption> options =
+                        SystemMediaBridge.listSelectableMediaApps(activity, workingSet);
+                for (int i = 0; i < options.size(); i++) {
+                    final SystemMediaBridge.MediaAppOption opt = options.get(i);
+                    LinearLayout itemWrap = new LinearLayout(activity);
+                    itemWrap.setOrientation(LinearLayout.VERTICAL);
+                    if (i > 0) {
+                        addHairlineDivider(activity, itemWrap, 0);
+                    }
+
+                    StringBuilder titleSb = new StringBuilder(opt.appName);
+                    if (opt.playingNow) {
+                        titleSb.append("  🟢正在播放");
+                    } else if (opt.activeSession) {
+                        titleSb.append("  🔵后台活跃");
+                    } else if (opt.installed) {
+                        titleSb.append("  [本机已装]");
+                    }
+                    if (!opt.pureMusicApp) {
+                        titleSb.append("  [视频/播客]");
+                    }
+
+                    StringBuilder descSb = new StringBuilder(opt.packageName);
+                    if (!opt.activeSongPreview.isEmpty()) {
+                        descSb.append("\n♪ ").append(opt.activeSongPreview);
+                    }
+
+                    final ToggleRow row = new ToggleRow(
+                            activity,
+                            titleSb.toString(),
+                            descSb.toString(),
+                            workingSet.contains(opt.packageName)
+                    );
+                    row.setOnChangeListener(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (row.isChecked()) {
+                                workingSet.add(opt.packageName);
+                            } else {
+                                workingSet.remove(opt.packageName);
+                            }
+                            if (segScope.getSelectedIndex() == 1) {
+                                segScope.setSelectedIndex(0);
+                            }
+                            updateScopeHint.run();
+                        }
+                    });
+                    itemWrap.addView(row);
+                    appRowsBox.addView(itemWrap, new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+                    rowByPkg.put(opt.packageName, row);
+                    wrapByPkg.put(opt.packageName, itemWrap);
+                    searchKeyByPkg.put(opt.packageName,
+                            (opt.appName + " " + opt.packageName + " " + opt.activeSongPreview)
+                                    .toLowerCase(Locale.ROOT));
+                }
+                applySearchFilter.run();
+                updateScopeHint.run();
+            }
+        };
+
+        final Runnable syncToggleVisuals = new Runnable() {
+            @Override
+            public void run() {
+                for (Map.Entry<String, ToggleRow> entry : rowByPkg.entrySet()) {
+                    entry.getValue().setChecked(workingSet.contains(entry.getKey()), true);
+                }
+                updateScopeHint.run();
+            }
+        };
+
+        addPresetChip(activity, presetRow1, "🎵 仅网易云+QQ", new Runnable() {
+            @Override
+            public void run() {
+                workingSet.clear();
+                workingSet.add("com.netease.cloudmusic");
+                workingSet.add("com.tencent.qqmusic");
+                segScope.setSelectedIndex(0);
+                syncToggleVisuals.run();
+            }
+        });
+        addPresetChip(activity, presetRow1, "🎧 主流音乐软件", new Runnable() {
+            @Override
+            public void run() {
+                workingSet.clear();
+                workingSet.addAll(CustomAiConfig.parsePackageCsvToSet(CustomAiConfig.DEFAULT_LYRICS_ALLOWED_PACKAGES));
+                segScope.setSelectedIndex(0);
+                syncToggleVisuals.run();
+            }
+        });
+        addPresetChip(activity, presetRow2, "🟢 仅当前活跃播放器", new Runnable() {
+            @Override
+            public void run() {
+                List<SystemMediaBridge.MediaAppOption> latest =
+                        SystemMediaBridge.listSelectableMediaApps(activity, workingSet);
+                Set<String> activeOnly = new LinkedHashSet<String>();
+                for (SystemMediaBridge.MediaAppOption o : latest) {
+                    if (o.activeSession) {
+                        activeOnly.add(o.packageName);
+                    }
+                }
+                if (activeOnly.isEmpty()) {
+                    Toast.makeText(activity, "当前未检测到后台活跃媒体会话，请先打开你的音乐软件放一首歌", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                workingSet.clear();
+                workingSet.addAll(activeOnly);
+                segScope.setSelectedIndex(0);
+                rebuildAppRows.run();
+                Toast.makeText(activity, "已仅勾选当前活跃的 " + activeOnly.size() + " 个播放器", Toast.LENGTH_SHORT).show();
+            }
+        });
+        addPresetChip(activity, presetRow2, "🧹 清空重选", new Runnable() {
+            @Override
+            public void run() {
+                workingSet.clear();
+                segScope.setSelectedIndex(0);
+                syncToggleVisuals.run();
+            }
+        });
+
+        etSearch.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+                applySearchFilter.run();
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {}
+        });
+
+        LinearLayout cardCustomPkg = addCardSection(activity, frame.body, "➕ 手动添加其他播放器包名");
+        TextView tvCustomTip = new TextView(activity);
+        tvCustomTip.setText("小提示：若使用小众本地播放器，也可以先在后台播放一首歌再点底部「🔄 刷新活跃」，它会自动以 🟢正在播放 出现在列表顶部，无需手输包名。");
+        tvCustomTip.setTextColor(COL_TEXT_SECONDARY);
+        tvCustomTip.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        LinearLayout.LayoutParams tipLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        tipLp.bottomMargin = dp(activity, 8);
+        cardCustomPkg.addView(tvCustomTip, tipLp);
+
+        LinearLayout addPkgRow = new LinearLayout(activity);
+        addPkgRow.setOrientation(LinearLayout.HORIZONTAL);
+        addPkgRow.setGravity(Gravity.CENTER_VERTICAL);
+        final EditText etCustomPkg = makeEdit(
+                activity,
+                "例如 com.xxx.music（多个用逗号分隔）",
+                "",
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI,
+                true
+        );
+        LinearLayout.LayoutParams etPkgLp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        etPkgLp.rightMargin = dp(activity, 8);
+        addPkgRow.addView(etCustomPkg, etPkgLp);
+
+        Button btnAddPkg = makePillBtn(activity, "➕ 添加勾选", COL_SKY, Color.rgb(56, 189, 248), 11.5f);
+        btnAddPkg.setPadding(dp(activity, 10), dp(activity, 9), dp(activity, 10), dp(activity, 9));
+        addPkgRow.addView(btnAddPkg, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        cardCustomPkg.addView(addPkgRow);
+
+        btnAddPkg.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Set<String> parsed = CustomAiConfig.parsePackageCsvToSet(etCustomPkg.getText().toString());
+                int added = 0;
+                for (String p : parsed) {
+                    if (p.contains(".") && p.length() >= 3) {
+                        workingSet.add(p);
+                        added++;
+                    }
+                }
+                if (added <= 0) {
+                    Toast.makeText(activity, "请输入有效的 Android 应用包名（如 org.akanework.gramophone）", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                etCustomPkg.setText("");
+                segScope.setSelectedIndex(0);
+                rebuildAppRows.run();
+                Toast.makeText(activity, "已添加并勾选 " + added + " 个应用包名", Toast.LENGTH_SHORT).show();
+            }
+        });
+
+        rebuildAppRows.run();
+
+        Button btnRefreshActive = makePillBtn(activity, "🔄 刷新活跃", COL_SLATE_BTN, COL_BORDER_INPUT, 12f);
+        btnRefreshActive.setPadding(dp(activity, 8), dp(activity, 10), dp(activity, 8), dp(activity, 10));
+        btnRefreshActive.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                rebuildAppRows.run();
+                Toast.makeText(activity, "已刷新后台活跃播放器列表", Toast.LENGTH_SHORT).show();
+            }
+        });
+
+        Button btnCancelSub = makePillBtn(activity, "取消", COL_SLATE_BTN, COL_BORDER_INPUT, 12.5f);
+        btnCancelSub.setPadding(dp(activity, 8), dp(activity, 10), dp(activity, 8), dp(activity, 10));
+        btnCancelSub.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                frame.dialog.dismiss();
+            }
+        });
+
+        Button btnSaveSub = makePillBtn(activity, "💾 保存生效", COL_BLUE, Color.rgb(96, 165, 250), 12.5f);
+        btnSaveSub.setPadding(dp(activity, 8), dp(activity, 10), dp(activity, 8), dp(activity, 10));
+        btnSaveSub.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                String pendingCustom = etCustomPkg.getText().toString().trim();
+                if (!pendingCustom.isEmpty()) {
+                    for (String p : CustomAiConfig.parsePackageCsvToSet(pendingCustom)) {
+                        if (p.contains(".") && p.length() >= 3) {
+                            workingSet.add(p);
+                        }
+                    }
+                }
+                String newScope = segScope.getSelectedIndex() == 1
+                        ? CustomAiConfig.LYRICS_APP_SCOPE_ALL
+                        : CustomAiConfig.LYRICS_APP_SCOPE_SELECTED;
+                String newCsv = joinPackageSet(workingSet);
+
+                parentCfg.lyricsAppScope = newScope;
+                parentCfg.lyricsAllowedPackages = newCsv;
+
+                CustomAiConfig immediate = CustomAiConfig.load(activity);
+                immediate.lyricsAppScope = newScope;
+                immediate.lyricsAllowedPackages = newCsv;
+                immediate.save(activity);
+
+                LyricsTeleprompterBridge.onConfigChanged(activity);
+                if (onSavedCallback != null) {
+                    onSavedCallback.run();
+                }
+                frame.dialog.dismiss();
+                Toast.makeText(activity,
+                        "✅ 已更新触发歌词应用：" + SystemMediaBridge.summarizeLyricsAppSelection(activity, immediate),
+                        Toast.LENGTH_SHORT).show();
+            }
+        });
+
+        LinearLayout.LayoutParams fRef = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.05f);
+        fRef.rightMargin = dp(activity, 6);
+        LinearLayout.LayoutParams fCan = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.85f);
+        fCan.rightMargin = dp(activity, 6);
+        LinearLayout.LayoutParams fSav = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.45f);
+        frame.footer.addView(btnRefreshActive, fRef);
+        frame.footer.addView(btnCancelSub, fCan);
+        frame.footer.addView(btnSaveSub, fSav);
+
         frame.dialog.show();
     }
 

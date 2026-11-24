@@ -1,8 +1,8 @@
---- orig/c0.smali
-+++ patched/c0.smali
+--- orig/b0.smali
++++ patched/b0.smali
 @@ -499,8 +499,17 @@
  
- .method public static final a(Lim0/c0;Ljava/lang/String;)V
+ .method public static final a(Ljm0/b0;Ljava/lang/String;)V
      .registers 5
  
 +    # ==================== [RAYNEO_CUSTOM_AI_MOD START : MOD-07 | Intercept Live Captions / Translate payload for Disco Elysium Subtext & GALGAME Options] ====================
@@ -16,5 +16,5 @@
 +
      invoke-virtual {p0}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
  
-     invoke-static {p1}, Lim0/h0;->d(Ljava/lang/String;)Ljava/lang/String;
+     invoke-static {p1}, Ljm0/g0;->d(Ljava/lang/String;)Ljava/lang/String;
  
