@@ -1635,6 +1635,12 @@ public final class TestOpenAiClient {
                 activeSessions, "com.rayneo.venus.pub", null);
         assertEq("tv.danmaku.bili", unrestricted != null ? unrestricted.packageName : null,
                 "unrestricted lookup keeps Bilibili for system media control");
+
+        // Verify v1.0.30 numeric businessId=20 (0x14) vs v1.0.25 String "TELEPROMPTER" compatibility
+        assertEq(true, LyricsTeleprompterBridge.isTeleprompterBusinessId("TELEPROMPTER"), "v1.0.25 string TELEPROMPTER");
+        assertEq(true, LyricsTeleprompterBridge.isTeleprompterBusinessId(Integer.valueOf(20)), "v1.0.30 integer 20 (0x14)");
+        assertEq(true, LyricsTeleprompterBridge.isTeleprompterBusinessId(Byte.valueOf((byte) 0x14)), "byte 0x14");
+        assertEq(false, LyricsTeleprompterBridge.isTeleprompterBusinessId(Integer.valueOf(18)), "non-teleprompter bizId");
     }
 
     private static void writeSse(OutputStream os, String chunk) throws IOException {

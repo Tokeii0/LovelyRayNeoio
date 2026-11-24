@@ -649,7 +649,7 @@ public final class LyricsTeleprompterBridge {
                     lastSeenDeviceId = (String) devObj;
                 }
                 Object bizObj = msgMap.get("businessId");
-                if (!"TELEPROMPTER".equals(bizObj)) {
+                if (!isTeleprompterBusinessId(bizObj)) {
                     return false;
                 }
                 Object payloadObj = msgMap.get("payload");
@@ -791,6 +791,16 @@ public final class LyricsTeleprompterBridge {
             }
         }
         return sb.toString();
+    }
+
+    public static boolean isTeleprompterBusinessId(Object bizObj) {
+        if (bizObj == null) return false;
+        if ("TELEPROMPTER".equals(bizObj)) return true;
+        if (bizObj instanceof Number) {
+            return (((Number) bizObj).intValue() & 0xFF) == 0x14;
+        }
+        String s = String.valueOf(bizObj).trim();
+        return "TELEPROMPTER".equalsIgnoreCase(s) || "20".equals(s) || "0x14".equalsIgnoreCase(s);
     }
 
     public static Map unwrapMessageMap(Map eventData) {
